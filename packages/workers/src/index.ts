@@ -18,3 +18,5 @@ export interface HarnessWorker {
   start(dependencies: HarnessWorkerDependencies): Promise<void>;
   stop(): Promise<void>;
 }
+
+export * from "./deployment.js";
