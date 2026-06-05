@@ -6,6 +6,7 @@ import type { EventLogRepository } from "@openstrat/persistence";
 import type { AgentToolGatewayToolName } from "@openstrat/workers";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { AgentRuntimePolicyEnforcer } from "./runtime-policy.js";
 
 const DISABLED_PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write"] as const;
 const OPENSTRAT_RUNTIME_EVENT_CUSTOM_TYPE = "openstrat.runtime_event";
@@ -13,6 +14,7 @@ const OPENSTRAT_RUNTIME_EVENT_CUSTOM_TYPE = "openstrat.runtime_event";
 export interface PiRuntimeAdapterDependencies {
   events: EventLogRepository;
   now?: () => string;
+  policy?: AgentRuntimePolicyEnforcer;
   sessionFactory?: PiAgentSessionFactory;
   transcriptStore?: PiTranscriptStore;
 }
@@ -106,6 +108,8 @@ interface ActivePiSession {
   manifest: AgentSessionManifest;
   runtime: PiAgentRuntimeSession;
   session: PiAgentSessionLike;
+  started_at: string;
+  turn_count: number;
   unsubscribe: () => void;
 }
 
@@ -226,9 +230,13 @@ export function createPiAgentRuntimeAdapter(
       if (!active) {
         throw new Error(`Pi agent session not found: ${input.session_id}`);
       }
+      const occurredAt = now();
+      dependencies.policy?.assertTurnAllowed(active.turn_count + 1);
+      dependencies.policy?.assertRuntimeWithin(active.started_at, occurredAt);
+      active.turn_count += 1;
       appendRuntimeEvent(dependencies, {
         manifest: active.manifest,
-        occurred_at: now(),
+        occurred_at: occurredAt,
         payload: {
           prompt_ref: `${active.manifest.event_stream_id}/turn/input`,
           runtime_session_id: active.session.sessionId
@@ -273,6 +281,15 @@ export function createPiAgentRuntimeAdapter(
     resumed_from_transcript_ref?: string;
   }): Promise<PiAgentRuntimeSession> {
     const manifest = AgentSessionManifestSchema.parse(params.input.manifest);
+    if (manifest.runtime.model_profile_id) {
+      params.dependencies.policy?.assertModelProfileAllowed(
+        manifest.runtime.model_profile_id
+      );
+    }
+    const startedAt = params.now();
+    const filteredToolNames =
+      params.dependencies.policy?.filterToolNames(params.input.toolNames) ??
+      params.input.toolNames;
     const transcriptRef =
       params.resumed_from_transcript_ref ??
       params.dependencies.transcriptStore?.create({
@@ -284,12 +301,12 @@ export function createPiAgentRuntimeAdapter(
       manifest.transcript_ref.uri;
     const session = await sessionFactory.create({
       manifest,
-      toolNames: params.input.toolNames
+      toolNames: filteredToolNames
     });
     const runtime: PiAgentRuntimeSession = {
       session_id: manifest.id,
       runtime_session_id: session.sessionId,
-      enabled_tools: [...params.input.toolNames],
+      enabled_tools: [...filteredToolNames],
       disabled_builtin_tools: [...DISABLED_PI_BUILTIN_TOOLS],
       transcript_ref: transcriptRef,
       ...(params.parent_session_id
@@ -302,11 +319,18 @@ export function createPiAgentRuntimeAdapter(
     const unsubscribe = session.subscribe((event) => {
       projectPiEvent(params.dependencies, params.now(), manifest, runtime, event);
     });
-    activeSessions.set(manifest.id, { manifest, runtime, session, unsubscribe });
+    activeSessions.set(manifest.id, {
+      manifest,
+      runtime,
+      session,
+      started_at: startedAt,
+      turn_count: 0,
+      unsubscribe
+    });
 
     appendRuntimeEvent(params.dependencies, {
       manifest,
-      occurred_at: params.now(),
+      occurred_at: startedAt,
       payload: {
         runtime: manifest.runtime.kind,
         runtime_session_id: session.sessionId,
@@ -422,6 +446,25 @@ function projectPiEvent(
   event: PiAgentSessionEvent
 ): void {
   if (event.type === "tool_execution_start") {
+    if (event.toolName && dependencies.policy) {
+      try {
+        dependencies.policy.assertToolAllowed(event.toolName);
+      } catch {
+        appendRuntimeEvent(dependencies, {
+          manifest,
+          occurred_at: occurredAt,
+          transcript_ref: runtime.transcript_ref,
+          type: "agent.runtime.tool_call_blocked",
+          payload: {
+            tool_call_id: event.toolCallId,
+            tool_name: event.toolName,
+            reason: "agent tool is forbidden by runtime policy"
+          }
+        });
+        return;
+      }
+    }
+
     appendRuntimeEvent(dependencies, {
       manifest,
       occurred_at: occurredAt,

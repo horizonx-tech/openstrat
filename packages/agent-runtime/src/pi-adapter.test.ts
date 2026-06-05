@@ -9,6 +9,10 @@ import {
   createPiAgentRuntimeAdapter,
   FilePiTranscriptStore
 } from "./pi-adapter.js";
+import {
+  createAgentRuntimePolicy,
+  createAgentRuntimePolicyEnforcer
+} from "./runtime-policy.js";
 
 const now = "2026-06-05T00:00:00.000Z";
 
@@ -104,6 +108,60 @@ describe("Pi agent runtime adapter", () => {
       "agent.runtime.tool_call_completed",
       "agent.runtime.turn_completed"
     ]);
+  });
+
+  it("records forbidden model-requested Pi/native tools as blocked runtime events", async () => {
+    const events = new SqliteEventLog(":memory:");
+    const adapter = createPiAgentRuntimeAdapter({
+      events,
+      now: () => now,
+      policy: createAgentRuntimePolicyEnforcer(
+        createAgentRuntimePolicy({
+          autonomy_mode: "strategy_workbench",
+          allowed_model_profile_ids: ["model/fake"],
+          allowed_tool_names: ["market_data.read_snapshot"]
+        })
+      ),
+      sessionFactory: createFakePiAgentSessionFactory({
+        events: [
+          {
+            type: "tool_execution_start",
+            toolCallId: "tool_call_native_write",
+            toolName: "write"
+          },
+          {
+            type: "agent_end",
+            messages: []
+          }
+        ]
+      })
+    });
+
+    const session = await adapter.startSession({
+      manifest: minimalManifest("agent_session_policy_block"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+
+    await adapter.prompt({
+      session_id: session.session_id,
+      prompt: "Patch the approved strategy manifest directly."
+    });
+
+    const stream = events.list("agent_sessions/agent_session_policy_block");
+    expect(stream.map((event) => event.type)).toEqual([
+      "agent.runtime.session_started",
+      "agent.runtime.turn_started",
+      "agent.runtime.tool_call_blocked",
+      "agent.runtime.turn_completed"
+    ]);
+    expect(stream.at(2)).toMatchObject({
+      type: "agent.runtime.tool_call_blocked",
+      payload: {
+        tool_call_id: "tool_call_native_write",
+        tool_name: "write",
+        reason: "agent tool is forbidden by runtime policy"
+      }
+    });
   });
 
   it("persists Pi JSONL transcripts under an agent-runtime owned directory", async () => {
