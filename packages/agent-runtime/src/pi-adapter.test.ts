@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { SqliteEventLog } from "@openstrat/persistence";
 import {
   createFakePiAgentSessionFactory,
-  createPiAgentRuntimeAdapter
+  createPiAgentRuntimeAdapter,
+  FilePiTranscriptStore
 } from "./pi-adapter.js";
 
 const now = "2026-06-05T00:00:00.000Z";
@@ -99,6 +104,120 @@ describe("Pi agent runtime adapter", () => {
       "agent.runtime.tool_call_completed",
       "agent.runtime.turn_completed"
     ]);
+  });
+
+  it("persists Pi JSONL transcripts under an agent-runtime owned directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openstrat-agent-runtime-"));
+    const transcriptStore = new FilePiTranscriptStore(root);
+    const events = new SqliteEventLog(":memory:");
+    const adapter = createPiAgentRuntimeAdapter({
+      events,
+      now: () => now,
+      sessionFactory: createFakePiAgentSessionFactory(),
+      transcriptStore
+    });
+
+    const session = await adapter.startSession({
+      manifest: minimalManifest("agent_session_003"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+
+    await adapter.prompt({
+      session_id: session.session_id,
+      prompt: "Summarize ETH market conditions."
+    });
+
+    expect(session.transcript_ref.startsWith(root)).toBe(true);
+    expect(session.transcript_ref).toContain("agent-runtime");
+    expect(existsSync(session.transcript_ref)).toBe(true);
+
+    const lines = (await readFile(session.transcript_ref, "utf8")).trim().split("\n");
+    expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
+      type: "session",
+      version: 3,
+      id: "agent_session_003"
+    });
+    expect(lines.map((line) => JSON.parse(line) as { type: string })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "custom",
+          customType: "openstrat.runtime_event"
+        })
+      ])
+    );
+    expect(
+      events.list("agent_sessions/agent_session_003").at(-1)?.metadata
+    ).toMatchObject({
+      transcript_ref: session.transcript_ref
+    });
+  });
+
+  it("records resume and fork identifiers without promoting transcript state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openstrat-agent-runtime-"));
+    const transcriptStore = new FilePiTranscriptStore(root);
+    const events = new SqliteEventLog(":memory:");
+    const adapter = createPiAgentRuntimeAdapter({
+      events,
+      now: () => now,
+      sessionFactory: createFakePiAgentSessionFactory(),
+      transcriptStore
+    });
+
+    const parent = await adapter.startSession({
+      manifest: minimalManifest("agent_session_parent"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+    const child = await adapter.forkSession({
+      manifest: minimalManifest("agent_session_child"),
+      parent_session_id: parent.session_id,
+      parent_transcript_ref: parent.transcript_ref,
+      toolNames: ["market_data.read_snapshot"]
+    });
+    const resumed = await adapter.resumeSession({
+      manifest: minimalManifest("agent_session_parent"),
+      transcript_ref: parent.transcript_ref,
+      toolNames: ["market_data.read_snapshot"]
+    });
+
+    expect(child.parent_session_id).toBe(parent.session_id);
+    expect(resumed.resumed_from_transcript_ref).toBe(parent.transcript_ref);
+    expect(events.list("agent_sessions/agent_session_child").at(0)).toMatchObject({
+      type: "agent.runtime.session_forked",
+      payload: {
+        parent_session_id: "agent_session_parent"
+      }
+    });
+  });
+
+  it("replays transcripts read-only without mutating the append-only event log", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openstrat-agent-runtime-"));
+    const transcriptStore = new FilePiTranscriptStore(root);
+    const events = new SqliteEventLog(":memory:");
+    const adapter = createPiAgentRuntimeAdapter({
+      events,
+      now: () => now,
+      sessionFactory: createFakePiAgentSessionFactory(),
+      transcriptStore
+    });
+
+    const session = await adapter.startSession({
+      manifest: minimalManifest("agent_session_004"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+    await adapter.prompt({
+      session_id: session.session_id,
+      prompt: "Check data."
+    });
+
+    const before = events.list("agent_sessions/agent_session_004").length;
+    const replay = await adapter.replayTranscript({
+      transcript_ref: session.transcript_ref
+    });
+    const after = events.list("agent_sessions/agent_session_004").length;
+
+    expect(replay.entries.length).toBeGreaterThan(0);
+    expect(replay.promoted_memory_writes).toBe(0);
+    expect(after).toBe(before);
   });
 });
 
