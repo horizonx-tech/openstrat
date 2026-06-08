@@ -22,11 +22,11 @@ describe("OpenStrat Pi model routing", () => {
     expect(
       OpenStratModelProfileSchema.safeParse({
         id: "model/openai-codex-subscription",
-        provider: "openai",
+        provider: "openai-codex",
         model: "gpt-5.5",
         auth: {
           kind: "openai_codex_oauth",
-          provider: "openai"
+          auth_provider: "openai-codex"
         }
       }).success
     ).toBe(true);
@@ -61,24 +61,24 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/missing-openai",
-      provider: "openai",
+      provider: "openai-codex",
       model: "gpt-5.5",
       auth: {
         kind: "openai_codex_oauth",
-        provider: "openai"
+        auth_provider: "openai-codex"
       }
     });
 
     expect(result).toMatchObject({
       ok: false,
       error: "missing_auth",
-      provider: "openai"
+      provider: "openai-codex"
     });
   });
 
   it("recognizes in-memory OpenAI Codex OAuth credentials without exposing tokens", async () => {
     const auth = createInMemoryPiModelAuth({
-      openai: {
+      "openai-codex": {
         type: "oauth",
         provider: "openai-codex",
         access: "access-token",
@@ -90,11 +90,11 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/openai-codex-subscription",
-      provider: "openai",
+      provider: "openai-codex",
       model: "gpt-5.5",
       auth: {
         kind: "openai_codex_oauth",
-        provider: "openai"
+        auth_provider: "openai-codex"
       }
     });
 

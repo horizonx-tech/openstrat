@@ -10,7 +10,7 @@ export const OpenStratModelAuthSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("openai_codex_oauth"),
-    provider: z.literal("openai")
+    auth_provider: z.literal("openai-codex")
   })
 ]);
 
@@ -81,7 +81,7 @@ export function createOpenStratModelRouter(
       }
 
       const profile = parsed.data;
-      const provider = profile.auth.provider;
+      const provider = authProviderFor(profile);
       const credential = options.auth.get(provider);
       const apiKey = await resolveProfileSecret(options.auth, profile);
 
@@ -119,7 +119,7 @@ async function resolveProfileSecret(
   auth: AuthStorage,
   profile: OpenStratModelProfile
 ): Promise<string | undefined> {
-  const provider = profile.auth.provider;
+  const provider = authProviderFor(profile);
   const apiKey = await auth.getApiKey(provider);
   if (apiKey) {
     return apiKey;
@@ -137,4 +137,11 @@ function previewSecret(secret: string): string {
     return "****";
   }
   return `${secret.slice(0, 4)}...${secret.slice(-4)}`;
+}
+
+function authProviderFor(profile: OpenStratModelProfile): string {
+  if (profile.auth.kind === "openai_codex_oauth") {
+    return profile.auth.auth_provider;
+  }
+  return profile.auth.provider;
 }
