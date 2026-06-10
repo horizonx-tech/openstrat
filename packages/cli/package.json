@@ -22,7 +22,12 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@openstrat/agent-runtime": "workspace:*",
     "@openstrat/backtesting": "workspace:*",
+    "@openstrat/domain": "workspace:*",
+    "@openstrat/market-data": "workspace:*",
+    "@openstrat/persistence": "workspace:*",
+    "@openstrat/workers": "workspace:*",
     "@openstrat/strategy-sdk": "workspace:*"
   },
   "devDependencies": {

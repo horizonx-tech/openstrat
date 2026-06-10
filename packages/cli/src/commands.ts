@@ -21,6 +21,11 @@ import {
 } from "@openstrat/agent-runtime";
 import { runCandleBacktest } from "@openstrat/backtesting";
 import {
+  BacktestReportSchema,
+  DeploymentGateSchema,
+  type DeploymentGate
+} from "@openstrat/domain";
+import {
   HyperliquidInfoClient,
   ingestHyperliquidWindow,
   normalizeHyperliquidMetaAndAssetCtxs,
@@ -34,6 +39,10 @@ import {
   type StrategyMarketEvent,
   type StrategyModule
 } from "@openstrat/strategy-sdk";
+import {
+  createAgentToolGateway,
+  type DeploymentGateInspection
+} from "@openstrat/workers";
 import {
   ensureOpenStratHome,
   findProjectRegistration,
@@ -91,6 +100,16 @@ interface MarketDatasetManifest {
   freshness: {
     latest_price_stale_after_ms?: number;
   };
+}
+
+interface DeploymentGateArtifact {
+  artifact_ref: string;
+  created_at: string;
+  gate_ref: string;
+  strategy_ref: string;
+  backtest_report_ref: string;
+  risk_policy_ref: string;
+  inspection: DeploymentGateInspection;
 }
 
 export interface RunOpenStratCliInput {
@@ -160,6 +179,12 @@ export async function runOpenStratCli(
         break;
       case "backtest":
         await commandBacktest({ argv, emitOut, home });
+        break;
+      case "gate":
+        await commandGate({ argv, emitOut, home });
+        break;
+      case "deploy":
+        await commandDeploy({ argv, emitOut, home });
         break;
       case "gateway":
         await commandGateway({ emitOut, home });
@@ -250,6 +275,152 @@ async function commandBacktestRunSample(options: {
   options.emitOut(`report: ${reportRef}`);
   options.emitOut(`trade_ledger: ${report.trade_ledger_ref}`);
   options.emitOut(`trades: ${report.metrics.trades}`);
+}
+
+async function commandGate(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const subcommand = options.argv.shift();
+  switch (subcommand) {
+    case "create-sample":
+      await commandGateCreateSample(options);
+      return;
+    case "inspect":
+      await commandGateInspect(options);
+      return;
+    default:
+      throw new Error("Usage: openstrat gate <create-sample|inspect>");
+  }
+}
+
+async function commandGateCreateSample(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  ensureOpenStratHome(options.home);
+  const strategyRef = requiredFlag(options.argv, "--strategy-ref");
+  const backtestReportRef = requiredFlag(options.argv, "--backtest-report-ref");
+  const riskPolicyRef = requiredFlag(options.argv, "--risk-policy-ref");
+  const readiness = sampleGateReadiness(options.argv);
+  const store = new FileObjectStore(options.home.objectsDir);
+  const report = BacktestReportSchema.parse(store.getJson(backtestReportRef));
+  if (report.strategy_id !== strategyRef) {
+    throw new Error(
+      `Strategy ref ${strategyRef} does not match backtest report strategy ${report.strategy_id}`
+    );
+  }
+
+  const createdAt = new Date().toISOString();
+  const gate = DeploymentGateSchema.parse({
+    id: `sample_gate_${Date.now()}_${readiness}`,
+    created_at: createdAt,
+    strategy_id: strategyRef,
+    strategy_version: report.strategy_version,
+    backtest: {
+      dataset_ref: report.dataset_ref,
+      min_win_rate: 0,
+      min_trades: 1,
+      max_drawdown_pct: 100,
+      include_fees: readiness === "ready",
+      include_slippage_model: readiness === "ready"
+    },
+    deployment: {
+      mode: "paper_trading",
+      duration_hours: 12,
+      max_notional_usd: 1000,
+      max_daily_loss_usd: 250,
+      kill_switch: readiness !== "ready"
+    },
+    required_reviews: readiness === "ready" ? ["risk"] : []
+  });
+  const inspection = await inspectGateWithGateway(options.home, store, gate);
+  const gateRef = `deployment-gates/${gate.id}.json`;
+  const artifactRef = `deployment-gate-artifacts/${gate.id}.json`;
+  const artifact: DeploymentGateArtifact = {
+    artifact_ref: artifactRef,
+    created_at: createdAt,
+    gate_ref: gateRef,
+    strategy_ref: strategyRef,
+    backtest_report_ref: backtestReportRef,
+    risk_policy_ref: riskPolicyRef,
+    inspection
+  };
+  store.putJson(gateRef, gate);
+  store.putJson(artifactRef, artifact);
+
+  options.emitOut(`gate: ${gateRef}`);
+  options.emitOut(`artifact: ${artifactRef}`);
+  options.emitOut(`ready: ${inspection.ready ? "yes" : "no"}`);
+  for (const requirement of inspection.missing_requirements) {
+    options.emitOut(`missing: ${requirement}`);
+  }
+}
+
+async function commandGateInspect(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const ref = options.argv[0];
+  if (!ref) {
+    throw new Error("Usage: openstrat gate inspect <GATE_OR_ARTIFACT_REF>");
+  }
+
+  const store = new FileObjectStore(options.home.objectsDir);
+  const loaded = readDeploymentGateRef(store, ref);
+  const inspection = await inspectGateWithGateway(options.home, store, loaded.gate);
+  options.emitOut(
+    JSON.stringify(
+      {
+        gate_ref: loaded.gate_ref,
+        ...(loaded.artifact_ref ? { artifact_ref: loaded.artifact_ref } : {}),
+        ...inspection
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function commandDeploy(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const subcommand = options.argv.shift();
+  switch (subcommand) {
+    case "plan":
+      await commandDeployPlan(options);
+      return;
+    default:
+      throw new Error("Usage: openstrat deploy plan --gate-ref <GATE_REF>");
+  }
+}
+
+async function commandDeployPlan(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const gateRef = requiredFlag(options.argv, "--gate-ref");
+  const store = new FileObjectStore(options.home.objectsDir);
+  const loaded = readDeploymentGateRef(store, gateRef);
+  const inspection = await inspectGateWithGateway(options.home, store, loaded.gate);
+  if (!inspection.ready) {
+    throw new Error(
+      `deployment gate is not ready: ${inspection.missing_requirements.join("; ")}`
+    );
+  }
+
+  options.emitOut("deployment plan: local_terminal");
+  options.emitOut(`gate: ${loaded.gate_ref}`);
+  options.emitOut(`strategy: ${loaded.gate.strategy_id}`);
+  options.emitOut(`mode: ${loaded.gate.deployment.mode}`);
+  options.emitOut(`duration_hours: ${loaded.gate.deployment.duration_hours}`);
+  options.emitOut(`max_notional_usd: ${loaded.gate.deployment.max_notional_usd}`);
 }
 
 async function commandStrategy(options: {
@@ -693,7 +864,7 @@ function commandReset(options: {
 function printHelp(emitOut: (line: string) => void): void {
   emitOut("openstrat <command>");
   emitOut(
-    "commands: init, doctor, auth codex, chat, artifacts, market, strategy, backtest, gateway, upgrade, update, reset --purge"
+    "commands: init, doctor, auth codex, chat, artifacts, market, strategy, backtest, gate, deploy, gateway, upgrade, update, reset --purge"
   );
 }
 
@@ -826,6 +997,15 @@ function requiredFlag(argv: readonly string[], flag: string): string {
   return value;
 }
 
+function sampleGateReadiness(argv: readonly string[]): "ready" | "not_ready" {
+  const ready = argv.includes("--ready");
+  const notReady = argv.includes("--not-ready");
+  if (ready === notReady) {
+    throw new Error("Pass exactly one of --ready or --not-ready");
+  }
+  return ready ? "ready" : "not_ready";
+}
+
 function numberFlag(argv: readonly string[], flag: string): number {
   const value = requiredFlag(argv, flag);
   const parsed = Number(value);
@@ -833,6 +1013,75 @@ function numberFlag(argv: readonly string[], flag: string): number {
     throw new Error(`Invalid number for ${flag}: ${value}`);
   }
   return parsed;
+}
+
+function readDeploymentGateRef(
+  store: FileObjectStore,
+  ref: string
+): { artifact_ref?: string; gate: DeploymentGate; gate_ref: string } {
+  const value = store.getJson<unknown>(ref);
+  if (isDeploymentGateArtifact(value)) {
+    return {
+      artifact_ref: ref,
+      gate_ref: value.gate_ref,
+      gate: DeploymentGateSchema.parse(store.getJson(value.gate_ref))
+    };
+  }
+
+  return {
+    gate_ref: ref,
+    gate: DeploymentGateSchema.parse(value)
+  };
+}
+
+function isDeploymentGateArtifact(value: unknown): value is DeploymentGateArtifact {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return typeof (value as { gate_ref?: unknown }).gate_ref === "string";
+}
+
+async function inspectGateWithGateway(
+  home: OpenStratHome,
+  store: FileObjectStore,
+  gate: DeploymentGate
+): Promise<DeploymentGateInspection> {
+  ensureOpenStratHome(home);
+  const events = new SqliteEventLog(home.stateDbPath);
+  try {
+    const gateway = createAgentToolGateway({
+      events,
+      objects: store,
+      marketData: {
+        async getMarket() {
+          throw new Error("market data is unavailable during gate inspection");
+        },
+        async getLatestPrice() {
+          throw new Error("market data is unavailable during gate inspection");
+        },
+        async getCandles() {
+          throw new Error("market data is unavailable during gate inspection");
+        },
+        async getOrderbookSnapshot() {
+          throw new Error("market data is unavailable during gate inspection");
+        }
+      },
+      risk: {
+        async review() {
+          throw new Error("risk review is unavailable during gate inspection");
+        }
+      },
+      now: () => new Date().toISOString()
+    });
+    return gateway.inspectDeploymentGate({
+      call_id: `cli_gate_inspect_${gate.id}`,
+      session_id: "cli_deployment_gate",
+      turn_id: "turn_gate_inspect",
+      gate
+    });
+  } finally {
+    events.close();
+  }
 }
 
 function listMarketDatasetRefs(home: OpenStratHome): string[] {

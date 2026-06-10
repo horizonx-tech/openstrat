@@ -288,6 +288,147 @@ describe("openstrat CLI commands", () => {
     expect(Array.isArray(ledger)).toBe(true);
   });
 
+  it("materializes deployment gates and blocks plans when requirements are missing", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome };
+
+    const ingest = await runOpenStratCli({
+      argv: ["market", "ingest-fixture", "--symbol", "BTC", "--interval", "15m"],
+      cwd,
+      env
+    });
+    const datasetRef = ingest.stdout
+      .find((line) => line.startsWith("dataset: "))
+      ?.replace("dataset: ", "");
+    const backtest = await runOpenStratCli({
+      argv: [
+        "backtest",
+        "run-sample",
+        "--strategy-ref",
+        "sample_moving_average_breakout",
+        "--dataset-ref",
+        datasetRef ?? "",
+        "--fee-bps",
+        "5",
+        "--slippage-bps",
+        "10"
+      ],
+      cwd,
+      env
+    });
+    const reportRef = backtest.stdout
+      .find((line) => line.startsWith("report: "))
+      ?.replace("report: ", "");
+
+    const readyGate = await runOpenStratCli({
+      argv: [
+        "gate",
+        "create-sample",
+        "--strategy-ref",
+        "sample_moving_average_breakout",
+        "--backtest-report-ref",
+        reportRef ?? "",
+        "--risk-policy-ref",
+        "risk/sample",
+        "--ready"
+      ],
+      cwd,
+      env
+    });
+    const readyGateRef = readyGate.stdout
+      .find((line) => line.startsWith("gate: "))
+      ?.replace("gate: ", "");
+    const readyArtifactRef = readyGate.stdout
+      .find((line) => line.startsWith("artifact: "))
+      ?.replace("artifact: ", "");
+    const readyInspect = await runOpenStratCli({
+      argv: ["gate", "inspect", readyArtifactRef ?? ""],
+      cwd,
+      env
+    });
+    const readyPlan = await runOpenStratCli({
+      argv: ["deploy", "plan", "--gate-ref", readyGateRef ?? ""],
+      cwd,
+      env
+    });
+
+    expect(readyGate.exitCode).toBe(0);
+    expect(readyGateRef).toContain("deployment-gates/");
+    expect(readyArtifactRef).toContain("deployment-gate-artifacts/");
+    expect(JSON.parse(readyInspect.stdout.join("\n"))).toMatchObject({
+      ready: true,
+      missing_requirements: []
+    });
+    expect(readyPlan.exitCode).toBe(0);
+    expect(readyPlan.stdout.join("\n")).toContain("deployment plan: local_terminal");
+
+    const readyArtifact = JSON.parse(
+      readFileSync(
+        join(userHome, ".openstrat", "dev-v0", "objects", readyArtifactRef ?? ""),
+        "utf8"
+      )
+    ) as {
+      backtest_report_ref: string;
+      gate_ref: string;
+      risk_policy_ref: string;
+      strategy_ref: string;
+    };
+    expect(readyArtifact).toMatchObject({
+      backtest_report_ref: reportRef,
+      gate_ref: readyGateRef,
+      risk_policy_ref: "risk/sample",
+      strategy_ref: "sample_moving_average_breakout"
+    });
+
+    const blockedGate = await runOpenStratCli({
+      argv: [
+        "gate",
+        "create-sample",
+        "--strategy-ref",
+        "sample_moving_average_breakout",
+        "--backtest-report-ref",
+        reportRef ?? "",
+        "--risk-policy-ref",
+        "risk/sample",
+        "--not-ready"
+      ],
+      cwd,
+      env
+    });
+    const blockedGateRef = blockedGate.stdout
+      .find((line) => line.startsWith("gate: "))
+      ?.replace("gate: ", "");
+    const blockedInspect = await runOpenStratCli({
+      argv: ["gate", "inspect", blockedGateRef ?? ""],
+      cwd,
+      env
+    });
+    const blockedPlan = await runOpenStratCli({
+      argv: ["deploy", "plan", "--gate-ref", blockedGateRef ?? ""],
+      cwd,
+      env
+    });
+    const blockedInspection = JSON.parse(blockedInspect.stdout.join("\n")) as {
+      missing_requirements: string[];
+      ready: boolean;
+    };
+
+    expect(blockedGate.exitCode).toBe(0);
+    expect(blockedInspection.ready).toBe(false);
+    expect(blockedInspection.missing_requirements).toEqual(
+      expect.arrayContaining([
+        "fee-inclusive backtest required",
+        "slippage-model backtest required",
+        "risk review required",
+        "deployment kill switch is active"
+      ])
+    );
+    expect(blockedPlan.exitCode).toBe(1);
+    expect(blockedPlan.stderr.join("\n")).toContain("deployment gate is not ready");
+    expect(blockedPlan.stderr.join("\n")).toContain("fee-inclusive backtest required");
+  });
+
   it("generates explicit upgrade commands and never self-updates silently", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
