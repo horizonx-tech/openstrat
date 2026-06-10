@@ -19,6 +19,7 @@ import {
   FilePiTranscriptStore,
   type PiAgentSessionFactory
 } from "@openstrat/agent-runtime";
+import { runCandleBacktest } from "@openstrat/backtesting";
 import {
   HyperliquidInfoClient,
   ingestHyperliquidWindow,
@@ -157,6 +158,9 @@ export async function runOpenStratCli(
       case "strategy":
         await commandStrategy({ argv, emitOut, home });
         break;
+      case "backtest":
+        await commandBacktest({ argv, emitOut, home });
+        break;
       case "gateway":
         await commandGateway({ emitOut, home });
         break;
@@ -191,6 +195,61 @@ async function commandInit(options: {
       ? `Project already registered: ${registration.cwd}`
       : `Project registered: ${registration.cwd}`
   );
+}
+
+async function commandBacktest(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const subcommand = options.argv.shift();
+  switch (subcommand) {
+    case "run-sample":
+      await commandBacktestRunSample(options);
+      return;
+    default:
+      throw new Error("Usage: openstrat backtest run-sample");
+  }
+}
+
+async function commandBacktestRunSample(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const strategyRef = requiredFlag(options.argv, "--strategy-ref");
+  if (strategyRef !== movingAverageBreakoutStrategy.manifest.strategy_id) {
+    throw new Error(`Unknown sample strategy ref: ${strategyRef}`);
+  }
+  const datasetRef = requiredFlag(options.argv, "--dataset-ref");
+  const feeBps = numberFlag(options.argv, "--fee-bps");
+  const slippageBps = numberFlag(options.argv, "--slippage-bps");
+  const store = new FileObjectStore(options.home.objectsDir);
+  const dataset = store.getJson<MarketDatasetManifest>(datasetRef);
+  const runId = `sample_backtest_${Date.now()}`;
+  const report = await runCandleBacktest({
+    run_id: runId,
+    strategy: movingAverageBreakoutStrategy,
+    object_store: store,
+    dataset_ref: dataset.dataset_ref,
+    candle_refs: dataset.candle_refs,
+    raw_artifact_refs: Object.values(dataset.raw_refs),
+    generated_at: new Date().toISOString(),
+    initial_equity_usd: 10_000,
+    fee_bps: feeBps,
+    slippage_model: () => ({
+      slippage_bps: slippageBps,
+      source_ref: `slippage/fixed/${slippageBps}bps`
+    }),
+    mode: "paper",
+    risk_policy_ref: "risk/sample"
+  });
+  const reportRef = `backtests/${runId}/report.json`;
+  store.putJson(reportRef, report);
+
+  options.emitOut(`report: ${reportRef}`);
+  options.emitOut(`trade_ledger: ${report.trade_ledger_ref}`);
+  options.emitOut(`trades: ${report.metrics.trades}`);
 }
 
 async function commandStrategy(options: {
@@ -634,7 +693,7 @@ function commandReset(options: {
 function printHelp(emitOut: (line: string) => void): void {
   emitOut("openstrat <command>");
   emitOut(
-    "commands: init, doctor, auth codex, chat, artifacts, market, strategy, gateway, upgrade, update, reset --purge"
+    "commands: init, doctor, auth codex, chat, artifacts, market, strategy, backtest, gateway, upgrade, update, reset --purge"
   );
 }
 
@@ -757,6 +816,23 @@ function parseUpgradeArgs(argv: string[]): {
 function stringFlag(argv: readonly string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
   return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function requiredFlag(argv: readonly string[], flag: string): string {
+  const value = stringFlag(argv, flag);
+  if (!value) {
+    throw new Error(`Missing required flag: ${flag}`);
+  }
+  return value;
+}
+
+function numberFlag(argv: readonly string[], flag: string): number {
+  const value = requiredFlag(argv, flag);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid number for ${flag}: ${value}`);
+  }
+  return parsed;
 }
 
 function listMarketDatasetRefs(home: OpenStratHome): string[] {

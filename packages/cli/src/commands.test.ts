@@ -221,6 +221,73 @@ describe("openstrat CLI commands", () => {
     });
   });
 
+  it("runs a sample candle backtest and writes report artifacts", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome };
+
+    const ingest = await runOpenStratCli({
+      argv: ["market", "ingest-fixture", "--symbol", "BTC", "--interval", "15m"],
+      cwd,
+      env
+    });
+    const datasetRef = ingest.stdout
+      .find((line) => line.startsWith("dataset: "))
+      ?.replace("dataset: ", "");
+    const backtest = await runOpenStratCli({
+      argv: [
+        "backtest",
+        "run-sample",
+        "--strategy-ref",
+        "sample_moving_average_breakout",
+        "--dataset-ref",
+        datasetRef ?? "",
+        "--fee-bps",
+        "5",
+        "--slippage-bps",
+        "10"
+      ],
+      cwd,
+      env
+    });
+    const reportRef = backtest.stdout
+      .find((line) => line.startsWith("report: "))
+      ?.replace("report: ", "");
+    const ledgerRef = backtest.stdout
+      .find((line) => line.startsWith("trade_ledger: "))
+      ?.replace("trade_ledger: ", "");
+
+    expect(backtest.exitCode).toBe(0);
+    expect(reportRef).toContain("backtests/");
+    expect(ledgerRef).toContain("trade-ledger.json");
+
+    const report = JSON.parse(
+      readFileSync(
+        join(userHome, ".openstrat", "dev-v0", "objects", reportRef ?? ""),
+        "utf8"
+      )
+    ) as {
+      dataset_ref: string;
+      metrics: { fees_usd: number; slippage_usd: number; trades: number };
+      trade_ledger_ref: string;
+    };
+    const ledger = JSON.parse(
+      readFileSync(
+        join(userHome, ".openstrat", "dev-v0", "objects", ledgerRef ?? ""),
+        "utf8"
+      )
+    ) as unknown[];
+
+    expect(report.dataset_ref).toBe(datasetRef);
+    expect(report.trade_ledger_ref).toBe(ledgerRef);
+    expect(report.metrics).toMatchObject({
+      fees_usd: expect.any(Number),
+      slippage_usd: expect.any(Number),
+      trades: expect.any(Number)
+    });
+    expect(Array.isArray(ledger)).toBe(true);
+  });
+
   it("generates explicit upgrade commands and never self-updates silently", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
