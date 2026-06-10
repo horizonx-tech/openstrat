@@ -157,6 +157,70 @@ describe("openstrat CLI commands", () => {
     });
   });
 
+  it("validates pure strategies, rejects impure strategies, and captures proposals", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome };
+
+    const valid = await runOpenStratCli({
+      argv: ["strategy", "validate", "--sample", "moving-average-breakout"],
+      cwd,
+      env
+    });
+    const invalid = await runOpenStratCli({
+      argv: ["strategy", "validate", "--sample", "invalid-random"],
+      cwd,
+      env
+    });
+    const proposal = await runOpenStratCli({
+      argv: [
+        "strategy",
+        "propose-sample",
+        "--strategy-id",
+        "sample_moving_average_breakout"
+      ],
+      cwd,
+      env
+    });
+    const artifactRef = proposal.stdout
+      .find((line) => line.startsWith("artifact: "))
+      ?.replace("artifact: ", "");
+    const patchRef = proposal.stdout
+      .find((line) => line.startsWith("patch: "))
+      ?.replace("patch: ", "");
+
+    expect(valid.exitCode).toBe(0);
+    expect(valid.stdout.join("\n")).toContain(
+      "strategy valid: sample_moving_average_breakout"
+    );
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.stderr.join("\n")).toContain("forbidden API");
+    expect(proposal.exitCode).toBe(0);
+    expect(artifactRef).toContain("agent-artifacts/");
+    expect(patchRef).toContain("scratch/");
+
+    const proposalArtifact = JSON.parse(
+      readFileSync(
+        join(userHome, ".openstrat", "dev-v0", "objects", artifactRef ?? ""),
+        "utf8"
+      )
+    ) as { id: string; patch_ref: string; status: string };
+    const patchBundle = JSON.parse(
+      readFileSync(
+        join(userHome, ".openstrat", "dev-v0", "objects", patchRef ?? ""),
+        "utf8"
+      )
+    ) as { files: { path: string; content: string }[] };
+
+    expect(proposalArtifact).toMatchObject({
+      patch_ref: patchRef,
+      status: "proposed"
+    });
+    expect(patchBundle.files[0]).toMatchObject({
+      path: "strategies/sample_moving_average_breakout.ts"
+    });
+  });
+
   it("generates explicit upgrade commands and never self-updates silently", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));

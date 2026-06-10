@@ -21,7 +21,8 @@
     "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.1"
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@openstrat/strategy-sdk": "workspace:*"
   },
   "devDependencies": {
     "esbuild": "latest"

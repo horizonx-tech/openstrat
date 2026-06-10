@@ -12,6 +12,7 @@
   "references": [
     { "path": "../agent-runtime" },
     { "path": "../market-data" },
-    { "path": "../persistence" }
+    { "path": "../persistence" },
+    { "path": "../strategy-sdk" }
   ]
 }

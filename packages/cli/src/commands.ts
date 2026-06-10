@@ -15,6 +15,7 @@ import {
   createAgentRuntimePolicyEnforcer,
   createFakePiAgentSessionFactory,
   createPiAgentRuntimeAdapter,
+  createStrategyProposalWorkflow,
   FilePiTranscriptStore,
   type PiAgentSessionFactory
 } from "@openstrat/agent-runtime";
@@ -25,6 +26,13 @@ import {
   type HyperliquidReadClient
 } from "@openstrat/market-data";
 import { FileObjectStore, SqliteEventLog } from "@openstrat/persistence";
+import {
+  createStrategyRunner,
+  defineStrategy,
+  movingAverageBreakoutStrategy,
+  type StrategyMarketEvent,
+  type StrategyModule
+} from "@openstrat/strategy-sdk";
 import {
   ensureOpenStratHome,
   findProjectRegistration,
@@ -40,6 +48,27 @@ import { cliVersion } from "./version.js";
 const MIN_NODE_VERSION = "22.19.0";
 const CODEX_PROVIDER_ID = "openai-codex";
 const MARKET_FIXTURE_RECEIVED_AT = "2026-06-04T00:00:00.000Z";
+const SAMPLE_STRATEGY_SOURCE = `import { defineStrategy } from "@openstrat/strategy-sdk";
+
+export const strategy = defineStrategy(
+  {
+    strategy_id: "sample_moving_average_breakout",
+    strategy_version: "0.1.0",
+    name: "Sample moving average breakout",
+    description: "Reference pure strategy captured by the OpenStrat workbench.",
+    runtime: "typescript",
+    entrypoint: "strategies/sample_moving_average_breakout.ts",
+    autonomy_mode: "strategy_workbench",
+    allowed_symbols: ["BTC-PERP"],
+    parameters: { lookback_candles: 3, target_notional_usd: 1000 },
+    required_data: [{ kind: "candles", canonical_symbol: "BTC-PERP", interval: "15m" }],
+    output: "trade_intent",
+    created_at: "2026-06-04T00:00:00.000Z",
+    source_refs: []
+  },
+  () => []
+);
+`;
 
 interface MarketDatasetManifest {
   dataset_ref: string;
@@ -125,6 +154,9 @@ export async function runOpenStratCli(
       case "market":
         await commandMarket({ argv, emitOut, home });
         break;
+      case "strategy":
+        await commandStrategy({ argv, emitOut, home });
+        break;
       case "gateway":
         await commandGateway({ emitOut, home });
         break;
@@ -159,6 +191,81 @@ async function commandInit(options: {
       ? `Project already registered: ${registration.cwd}`
       : `Project registered: ${registration.cwd}`
   );
+}
+
+async function commandStrategy(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const subcommand = options.argv.shift();
+  switch (subcommand) {
+    case "validate":
+      await commandStrategyValidate(options);
+      return;
+    case "propose-sample":
+      commandStrategyProposeSample(options);
+      return;
+    default:
+      throw new Error("Usage: openstrat strategy <validate|propose-sample>");
+  }
+}
+
+async function commandStrategyValidate(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+}): Promise<void> {
+  const sample = stringFlag(options.argv, "--sample");
+  const strategy = sampleStrategy(sample);
+  const result = await createStrategyRunner().evaluate(strategy, {
+    now: "2026-06-04T00:45:00.000Z",
+    mode: "paper",
+    risk_policy_ref: "risk/sample",
+    decision_ref: "strategy-workbench/sample-validation",
+    market_events: sampleStrategyMarketEvents()
+  });
+
+  options.emitOut(`strategy valid: ${strategy.manifest.strategy_id}`);
+  options.emitOut(`intents: ${result.intents.length}`);
+}
+
+function commandStrategyProposeSample(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): void {
+  ensureOpenStratHome(options.home);
+  const strategyId =
+    stringFlag(options.argv, "--strategy-id") ?? "sample_moving_average_breakout";
+  const objects = new FileObjectStore(options.home.objectsDir);
+  const events = new SqliteEventLog(options.home.stateDbPath);
+  try {
+    const workflow = createStrategyProposalWorkflow({
+      events,
+      objects,
+      now: () => "2026-06-04T00:45:00.000Z"
+    });
+    const proposal = workflow.capturePatchBundle({
+      session_id: "cli_strategy_workbench",
+      turn_id: "turn_strategy_sample",
+      strategy_id: strategyId,
+      base_strategy_version: "0.1.0",
+      rationale:
+        "Capture the sample moving-average breakout strategy as a scratch proposal.",
+      files: [
+        {
+          path: `strategies/${strategyId}.ts`,
+          content: SAMPLE_STRATEGY_SOURCE
+        }
+      ]
+    });
+
+    options.emitOut(`proposal: ${proposal.id}`);
+    options.emitOut(`artifact: ${proposal.artifact_ref.uri}`);
+    options.emitOut(`patch: ${proposal.patch_ref}`);
+  } finally {
+    events.close();
+  }
 }
 
 async function commandMarket(options: {
@@ -527,7 +634,7 @@ function commandReset(options: {
 function printHelp(emitOut: (line: string) => void): void {
   emitOut("openstrat <command>");
   emitOut(
-    "commands: init, doctor, auth codex, chat, artifacts, market, gateway, upgrade, update, reset --purge"
+    "commands: init, doctor, auth codex, chat, artifacts, market, strategy, gateway, upgrade, update, reset --purge"
   );
 }
 
@@ -781,6 +888,120 @@ function createFixtureHyperliquidClient(): HyperliquidReadClient {
       };
     }
   };
+}
+
+function sampleStrategy(sample: string | undefined): StrategyModule {
+  switch (sample ?? "moving-average-breakout") {
+    case "moving-average-breakout":
+      return movingAverageBreakoutStrategy;
+    case "invalid-random":
+      return defineStrategy(
+        {
+          strategy_id: "invalid_random_strategy",
+          strategy_version: "0.1.0",
+          name: "Invalid random strategy",
+          description: "Fixture strategy that violates purity constraints.",
+          runtime: "typescript",
+          entrypoint: "fixtures/invalid-random",
+          autonomy_mode: "strategy_workbench",
+          allowed_symbols: ["BTC-PERP"],
+          parameters: {},
+          required_data: [
+            { kind: "candles", canonical_symbol: "BTC-PERP", interval: "15m" }
+          ],
+          output: "trade_intent",
+          created_at: "2026-06-04T00:00:00.000Z",
+          source_refs: []
+        },
+        () => [
+          {
+            id: `invalid_random_strategy:${Date.now()}`,
+            created_at: "2026-06-04T00:45:00.000Z",
+            created_by: {
+              strategy_id: "invalid_random_strategy",
+              strategy_version: "0.1.0"
+            },
+            mode: "paper",
+            intent_type: "open_position",
+            canonical_symbol: "BTC-PERP",
+            side: "long",
+            target_notional_usd: 1000,
+            max_slippage_bps: 15,
+            reason_ref: "fixtures/invalid-random",
+            evidence_refs: ["fixtures/invalid-random"],
+            risk_policy_ref: "risk/sample",
+            invalidation: { thesis_invalid_if: ["impure fixture"] }
+          }
+        ]
+      );
+    default:
+      throw new Error(`Unknown strategy sample: ${sample}`);
+  }
+}
+
+function sampleStrategyMarketEvents(): StrategyMarketEvent[] {
+  return [
+    {
+      kind: "candle",
+      candle: {
+        symbol: "BTC",
+        canonical_symbol: "BTC-PERP",
+        source: "hyperliquid",
+        venue: "hyperliquid",
+        interval: "15m",
+        open_time: "2026-06-04T00:00:00.000Z",
+        close_time: "2026-06-04T00:15:00.000Z",
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100,
+        volume: 10,
+        method: "venue_ohlcv",
+        received_at: "2026-06-04T00:45:00.000Z",
+        raw_ref: "fixtures/candle-1"
+      }
+    },
+    {
+      kind: "candle",
+      candle: {
+        symbol: "BTC",
+        canonical_symbol: "BTC-PERP",
+        source: "hyperliquid",
+        venue: "hyperliquid",
+        interval: "15m",
+        open_time: "2026-06-04T00:15:00.000Z",
+        close_time: "2026-06-04T00:30:00.000Z",
+        open: 100,
+        high: 102,
+        low: 99,
+        close: 101,
+        volume: 12,
+        method: "venue_ohlcv",
+        received_at: "2026-06-04T00:45:00.000Z",
+        raw_ref: "fixtures/candle-2"
+      }
+    },
+    {
+      kind: "candle",
+      candle: {
+        symbol: "BTC",
+        canonical_symbol: "BTC-PERP",
+        source: "hyperliquid",
+        venue: "hyperliquid",
+        interval: "15m",
+        open_time: "2026-06-04T00:30:00.000Z",
+        close_time: "2026-06-04T00:45:00.000Z",
+        open: 101,
+        high: 104,
+        low: 100,
+        close: 103,
+        volume: 14,
+        method: "venue_ohlcv",
+        received_at: "2026-06-04T00:45:00.000Z",
+        raw_ref: "fixtures/candle-3"
+      }
+    }
+  ];
 }
 
 function fakePiChatEvents(options: { finalOnly: boolean }) {
