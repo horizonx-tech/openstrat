@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
 import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -12,8 +18,13 @@ import {
   FilePiTranscriptStore,
   type PiAgentSessionFactory
 } from "@openstrat/agent-runtime";
-import { HyperliquidInfoClient } from "@openstrat/market-data";
-import { SqliteEventLog } from "@openstrat/persistence";
+import {
+  HyperliquidInfoClient,
+  ingestHyperliquidWindow,
+  normalizeHyperliquidMetaAndAssetCtxs,
+  type HyperliquidReadClient
+} from "@openstrat/market-data";
+import { FileObjectStore, SqliteEventLog } from "@openstrat/persistence";
 import {
   ensureOpenStratHome,
   findProjectRegistration,
@@ -28,6 +39,29 @@ import { cliVersion } from "./version.js";
 
 const MIN_NODE_VERSION = "22.19.0";
 const CODEX_PROVIDER_ID = "openai-codex";
+const MARKET_FIXTURE_RECEIVED_AT = "2026-06-04T00:00:00.000Z";
+
+interface MarketDatasetManifest {
+  dataset_ref: string;
+  canonical_symbol: string;
+  source: string;
+  venue: string;
+  received_at: string;
+  registry_ref: string;
+  latest_price_ref: string;
+  candle_refs: string[];
+  funding_refs: string[];
+  orderbook_refs: string[];
+  raw_refs: {
+    meta_and_asset_ctxs: string;
+    candles: string;
+    funding: string;
+    l2_book: string;
+  };
+  freshness: {
+    latest_price_stale_after_ms?: number;
+  };
+}
 
 export interface RunOpenStratCliInput {
   argv: string[];
@@ -88,6 +122,9 @@ export async function runOpenStratCli(
       case "artifacts":
         await commandArtifacts({ emitOut, home });
         break;
+      case "market":
+        await commandMarket({ argv, emitOut, home });
+        break;
       case "gateway":
         await commandGateway({ emitOut, home });
         break;
@@ -121,6 +158,163 @@ async function commandInit(options: {
     existing
       ? `Project already registered: ${registration.cwd}`
       : `Project registered: ${registration.cwd}`
+  );
+}
+
+async function commandMarket(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  const subcommand = options.argv.shift();
+  switch (subcommand) {
+    case "ingest-fixture":
+      await commandMarketIngestFixture(options);
+      return;
+    case "list":
+      commandMarketList(options);
+      return;
+    case "snapshot":
+      commandMarketSnapshot(options);
+      return;
+    default:
+      throw new Error(
+        "Usage: openstrat market <ingest-fixture|list|snapshot> [options]"
+      );
+  }
+}
+
+async function commandMarketIngestFixture(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): Promise<void> {
+  ensureOpenStratHome(options.home);
+  const symbol = stringFlag(options.argv, "--symbol")?.toUpperCase() ?? "BTC";
+  const interval = stringFlag(options.argv, "--interval") ?? "15m";
+  if (symbol !== "BTC" || interval !== "15m") {
+    throw new Error("Fixture ingest currently supports --symbol BTC --interval 15m");
+  }
+
+  const store = new FileObjectStore(options.home.objectsDir);
+  const client = createFixtureHyperliquidClient();
+  const result = await ingestHyperliquidWindow({
+    client,
+    object_store: store,
+    coin: symbol,
+    interval: "15m",
+    start_time_ms: 1681923600000,
+    end_time_ms: 1681927200000,
+    received_at: MARKET_FIXTURE_RECEIVED_AT
+  });
+  const normalized = normalizeHyperliquidMetaAndAssetCtxs(
+    store.getJson(result.raw_refs.meta_and_asset_ctxs),
+    {
+      received_at: MARKET_FIXTURE_RECEIVED_AT,
+      raw_ref: result.raw_refs.meta_and_asset_ctxs
+    }
+  );
+  const canonicalSymbol = `${symbol}-PERP`;
+  const market = normalized.registry.find(
+    (entry) => entry.canonical_symbol === canonicalSymbol
+  );
+  const latestPrice = normalized.mark_prices.find(
+    (datum) => datum.canonical_symbol === canonicalSymbol
+  );
+  if (!market || !latestPrice) {
+    throw new Error(`Fixture market not found: ${canonicalSymbol}`);
+  }
+
+  const timestampSlug = slugTimestamp(MARKET_FIXTURE_RECEIVED_AT);
+  const latestPriceRef = `normalized/hyperliquid/mark-prices/${canonicalSymbol}/${timestampSlug}.json`;
+  const datasetRef = `datasets/hyperliquid/${canonicalSymbol}/${timestampSlug}.json`;
+  store.putJson(latestPriceRef, latestPrice, { overwrite: true });
+  store.putJson(
+    datasetRef,
+    {
+      dataset_ref: datasetRef,
+      canonical_symbol: canonicalSymbol,
+      source: market.source,
+      venue: market.venue,
+      received_at: MARKET_FIXTURE_RECEIVED_AT,
+      registry_ref: result.registry_ref,
+      latest_price_ref: latestPriceRef,
+      candle_refs: result.candle_refs,
+      funding_refs: result.funding_refs,
+      orderbook_refs: result.orderbook_refs,
+      raw_refs: result.raw_refs,
+      freshness: {
+        latest_price_stale_after_ms: latestPrice.stale_after_ms
+      }
+    },
+    { overwrite: true }
+  );
+
+  options.emitOut(`dataset: ${datasetRef}`);
+  options.emitOut(`registry: ${result.registry_ref}`);
+  options.emitOut(`latest_price: ${latestPriceRef}`);
+  options.emitOut(`raw: ${result.raw_refs.meta_and_asset_ctxs}`);
+}
+
+function commandMarketList(options: {
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): void {
+  const store = new FileObjectStore(options.home.objectsDir);
+  const refs = listMarketDatasetRefs(options.home);
+  if (refs.length === 0) {
+    options.emitOut("No market datasets found.");
+    return;
+  }
+
+  for (const ref of refs) {
+    const dataset = store.getJson<MarketDatasetManifest>(ref);
+    options.emitOut(
+      `${dataset.canonical_symbol} ${dataset.source} ${dataset.venue} ${ref}`
+    );
+  }
+}
+
+function commandMarketSnapshot(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+}): void {
+  const canonicalSymbol = options.argv[0];
+  if (!canonicalSymbol) {
+    throw new Error("Usage: openstrat market snapshot <CANONICAL_SYMBOL>");
+  }
+
+  const store = new FileObjectStore(options.home.objectsDir);
+  const datasetRef = listMarketDatasetRefs(options.home)
+    .map((ref) => store.getJson<MarketDatasetManifest>(ref))
+    .filter((dataset) => dataset.canonical_symbol === canonicalSymbol)
+    .sort((left, right) =>
+      right.received_at.localeCompare(left.received_at)
+    )[0]?.dataset_ref;
+  if (!datasetRef) {
+    throw new Error(`Market dataset not found: ${canonicalSymbol}`);
+  }
+
+  const dataset = store.getJson<MarketDatasetManifest>(datasetRef);
+  const registry = store.getJson<{ canonical_symbol: string }[]>(dataset.registry_ref);
+  const market = registry.find(
+    (entry) => entry.canonical_symbol === dataset.canonical_symbol
+  );
+  if (!market) {
+    throw new Error(`Market registry entry not found: ${dataset.canonical_symbol}`);
+  }
+
+  options.emitOut(
+    JSON.stringify(
+      {
+        dataset_ref: dataset.dataset_ref,
+        market,
+        latest_price: store.getJson(dataset.latest_price_ref)
+      },
+      null,
+      2
+    )
   );
 }
 
@@ -333,7 +527,7 @@ function commandReset(options: {
 function printHelp(emitOut: (line: string) => void): void {
   emitOut("openstrat <command>");
   emitOut(
-    "commands: init, doctor, auth codex, chat, artifacts, gateway, upgrade, update, reset --purge"
+    "commands: init, doctor, auth codex, chat, artifacts, market, gateway, upgrade, update, reset --purge"
   );
 }
 
@@ -450,6 +644,142 @@ function parseUpgradeArgs(argv: string[]): {
     ...(versionIndex >= 0 && argv[versionIndex + 1]
       ? { version: argv[versionIndex + 1] }
       : {})
+  };
+}
+
+function stringFlag(argv: readonly string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function listMarketDatasetRefs(home: OpenStratHome): string[] {
+  const datasetsRoot = join(home.objectsDir, "datasets", "hyperliquid");
+  if (!existsSync(datasetsRoot)) {
+    return [];
+  }
+
+  const refs: string[] = [];
+  const walk = (dir: string, refPrefix: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const childPath = join(dir, entry.name);
+      const childRef = join(refPrefix, entry.name);
+      if (entry.isDirectory()) {
+        walk(childPath, childRef);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".json")) {
+        refs.push(childRef);
+      }
+    }
+  };
+  walk(datasetsRoot, "datasets/hyperliquid");
+  return refs.sort();
+}
+
+function slugTimestamp(value: string): string {
+  return value.replace(/[:]/g, "-");
+}
+
+function createFixtureHyperliquidClient(): HyperliquidReadClient {
+  return {
+    async metaAndAssetCtxs() {
+      return [
+        {
+          universe: [
+            {
+              name: "BTC",
+              szDecimals: 5,
+              maxLeverage: 50,
+              marginTableId: 50
+            }
+          ],
+          marginTables: [
+            [
+              50,
+              {
+                description: "",
+                marginTiers: [{ lowerBound: "0.0", maxLeverage: 50 }]
+              }
+            ]
+          ],
+          collateralToken: 0
+        },
+        [
+          {
+            prevDayPx: "110000.0",
+            dayNtlVlm: "1500000000.0",
+            markPx: "113377.0",
+            midPx: "113387.0",
+            funding: "0.0000125",
+            openInterest: "10000.0",
+            premium: "0.0001",
+            oraclePx: "113370.0",
+            impactPxs: ["113376.0", "113397.0"],
+            dayBaseVlm: "12000.0"
+          }
+        ]
+      ];
+    },
+    async candleSnapshot() {
+      return [
+        {
+          T: 1681924499999,
+          c: "29258.0",
+          h: "29309.0",
+          i: "15m",
+          l: "29250.0",
+          n: 189,
+          o: "29295.0",
+          s: "BTC",
+          t: 1681923600000,
+          v: "0.98639"
+        },
+        {
+          T: 1681925399999,
+          c: "29280.0",
+          h: "29290.0",
+          i: "15m",
+          l: "29240.0",
+          n: 101,
+          o: "29258.0",
+          s: "BTC",
+          t: 1681924500000,
+          v: "0.456"
+        }
+      ];
+    },
+    async fundingHistory() {
+      return [
+        {
+          coin: "BTC",
+          fundingRate: "0.0000125",
+          premium: "0.0001",
+          time: 1681923600000
+        },
+        {
+          coin: "BTC",
+          fundingRate: "-0.000003",
+          premium: "-0.00002",
+          time: 1681927200000
+        }
+      ];
+    },
+    async l2Book() {
+      return {
+        coin: "BTC",
+        time: 1754450974231,
+        levels: [
+          [
+            { px: "113377.0", sz: "7.6699", n: 17 },
+            { px: "113376.0", sz: "4.13714", n: 8 }
+          ],
+          [
+            { px: "113397.0", sz: "0.11543", n: 3 },
+            { px: "113398.0", sz: "1.2", n: 4 }
+          ]
+        ]
+      };
+    }
   };
 }
 

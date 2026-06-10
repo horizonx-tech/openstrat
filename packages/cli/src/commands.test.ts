@@ -55,7 +55,9 @@ describe("openstrat CLI commands", () => {
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
     const env = {
       HOME: userHome,
-      OPENSTRAT_FAKE_CODEX_AUTH: "1"
+      OPENSTRAT_FAKE_CODEX_AUTH: "1",
+      OPENSTRAT_FAKE_HYPERLIQUID: "1",
+      OPENSTRAT_SKIP_EXTERNAL_CLI_CHECKS: "1"
     };
 
     const auth = await runOpenStratCli({ argv: ["auth", "codex"], cwd, env });
@@ -86,6 +88,73 @@ describe("openstrat CLI commands", () => {
     expect(chat.exitCode).toBe(0);
     expect(chat.stdout.join("\n")).toContain("Final assistant text from Pi.");
     expect(chat.stdout.join("\n")).not.toContain("OpenStrat chat session completed.");
+  });
+
+  it("ingests fixture market data and reads typed market snapshots", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome };
+
+    const ingest = await runOpenStratCli({
+      argv: ["market", "ingest-fixture", "--symbol", "BTC", "--interval", "15m"],
+      cwd,
+      env
+    });
+    const datasetRef = ingest.stdout
+      .find((line) => line.startsWith("dataset: "))
+      ?.replace("dataset: ", "");
+
+    expect(ingest.exitCode).toBe(0);
+    expect(datasetRef).toBeDefined();
+
+    const dataset = JSON.parse(
+      readFileSync(
+        join(userHome, ".openstrat", "dev-v0", "objects", datasetRef ?? ""),
+        "utf8"
+      )
+    ) as {
+      canonical_symbol: string;
+      dataset_ref: string;
+      latest_price_ref: string;
+      raw_refs: Record<string, string>;
+      source: string;
+      venue: string;
+    };
+    expect(dataset).toMatchObject({
+      canonical_symbol: "BTC-PERP",
+      dataset_ref: datasetRef,
+      source: "hyperliquid",
+      venue: "hyperliquid"
+    });
+    expect(dataset.raw_refs.meta_and_asset_ctxs).toContain("raw/hyperliquid");
+
+    const list = await runOpenStratCli({ argv: ["market", "list"], cwd, env });
+    expect(list.exitCode).toBe(0);
+    expect(list.stdout.join("\n")).toContain("BTC-PERP hyperliquid hyperliquid");
+
+    const snapshot = await runOpenStratCli({
+      argv: ["market", "snapshot", "BTC-PERP"],
+      cwd,
+      env
+    });
+    const parsed = JSON.parse(snapshot.stdout.join("\n")) as {
+      dataset_ref: string;
+      latest_price: { raw_ref: string; stale_after_ms: number; venue: string };
+      market: { canonical_symbol: string; source: string; venue: string };
+    };
+
+    expect(snapshot.exitCode).toBe(0);
+    expect(parsed.dataset_ref).toBe(datasetRef);
+    expect(parsed.market).toMatchObject({
+      canonical_symbol: "BTC-PERP",
+      source: "hyperliquid",
+      venue: "hyperliquid"
+    });
+    expect(parsed.latest_price).toMatchObject({
+      raw_ref: dataset.raw_refs.meta_and_asset_ctxs,
+      stale_after_ms: 5000,
+      venue: "hyperliquid"
+    });
   });
 
   it("generates explicit upgrade commands and never self-updates silently", async () => {
