@@ -1071,6 +1071,9 @@ async function commandChat(options: {
 
   const runtimeKind = chatRuntimeFromArgs(options.argv, options.env);
   if (runtimeKind === "pi") {
+    if (stringFlag(options.argv, "--resume")) {
+      throw new Error("Codex chat resume is only supported for codex_app_server");
+    }
     await commandPiChat(options, prompt);
     return;
   }
@@ -1088,10 +1091,12 @@ async function commandCodexAppServerChat(
   prompt: string
 ): Promise<void> {
   const events = new SqliteEventLog(options.home.stateDbPath);
-  const sessionId = `agent_session_${Date.now()}`;
+  const resumeSessionId = stringFlag(options.argv, "--resume");
+  const sessionId = resumeSessionId ?? `agent_session_${Date.now()}`;
+  const bindingStore = new FileCodexAppServerBindingStore(options.home.root);
   const transcriptStore = new FileCodexAppServerTranscriptStore(options.home.root);
   const adapter = new FakeCodexAppServerRuntimeAdapter({
-    bindingStore: new FileCodexAppServerBindingStore(options.home.root),
+    bindingStore,
     events,
     now: () => new Date().toISOString(),
     runtimeEvents: fakeCodexChatEvents({
@@ -1101,33 +1106,26 @@ async function commandCodexAppServerChat(
   });
 
   const createdAt = new Date().toISOString();
-  const runtime = await adapter.startSession({
-    manifest: {
-      id: sessionId,
-      created_at: createdAt,
-      purpose: "strategy_research",
-      autonomy_mode: "strategy_workbench",
-      runtime: {
-        kind: "codex_app_server",
-        adapter: "@openstrat/agent-runtime/codex-app-server",
-        model_profile_id: "model/openai-codex-subscription",
-        provider: "openai-codex",
-        model: "gpt-5.5"
-      },
-      transcript_ref: {
-        id: `artifact_transcript_${sessionId}`,
-        kind: "agent_transcript",
-        uri: join(options.home.sessionsDir, `${sessionId}.jsonl`),
-        content_hash: "sha256:pending",
-        created_at: createdAt,
-        append_only: true
-      },
-      event_stream_id: `agent_sessions/${sessionId}`,
-      tool_grant_ids: [],
-      canonical_ledger_refs: []
-    },
-    toolNames: ["market_data.read_snapshot"]
-  });
+  const manifest = codexChatManifest(options.home, sessionId, createdAt);
+  const existingBinding = resumeSessionId
+    ? bindingStore.read(resumeSessionId)
+    : undefined;
+  if (resumeSessionId && !existingBinding) {
+    throw new Error(
+      `No Codex app-server binding found for session: ${resumeSessionId}`
+    );
+  }
+  const runtime = existingBinding
+    ? await adapter.resumeSession({
+        manifest,
+        toolNames: existingBinding.enabled_tools,
+        codex_thread_id: existingBinding.codex_thread_id,
+        transcript_ref: existingBinding.transcript_ref
+      })
+    : await adapter.startSession({
+        manifest,
+        toolNames: ["market_data.read_snapshot"]
+      });
   await adapter.prompt({ session_id: sessionId, prompt });
   await adapter.dispose(sessionId);
 
@@ -1144,6 +1142,9 @@ async function commandCodexAppServerChat(
   options.emitOut("runtime: codex_app_server");
   options.emitOut(`session: ${sessionId}`);
   options.emitOut(`codex thread: ${runtime.codex_thread_id}`);
+  if (runtime.resumed_from_codex_thread_id) {
+    options.emitOut(`resumed codex thread: ${runtime.resumed_from_codex_thread_id}`);
+  }
   options.emitOut(`transcript: ${runtime.transcript_ref}`);
   options.emitOut(`disabled native tools: ${runtime.disabled_native_tools.join(",")}`);
   events.close();
@@ -1290,6 +1291,33 @@ function commandReset(options: {
   }
   const result = safePurgeOpenStratHome(options.home);
   options.emitOut(`${result.deleted ? "Purged" : "Nothing to purge"}: ${result.path}`);
+}
+
+function codexChatManifest(home: OpenStratHome, sessionId: string, createdAt: string) {
+  return {
+    id: sessionId,
+    created_at: createdAt,
+    purpose: "strategy_research",
+    autonomy_mode: "strategy_workbench",
+    runtime: {
+      kind: "codex_app_server",
+      adapter: "@openstrat/agent-runtime/codex-app-server",
+      model_profile_id: "model/openai-codex-subscription",
+      provider: "openai-codex",
+      model: "gpt-5.5"
+    },
+    transcript_ref: {
+      id: `artifact_transcript_${sessionId}`,
+      kind: "agent_transcript",
+      uri: join(home.sessionsDir, `${sessionId}.jsonl`),
+      content_hash: "sha256:pending",
+      created_at: createdAt,
+      append_only: true
+    },
+    event_stream_id: `agent_sessions/${sessionId}`,
+    tool_grant_ids: [],
+    canonical_ledger_refs: []
+  };
 }
 
 function printHelp(emitOut: (line: string) => void): void {

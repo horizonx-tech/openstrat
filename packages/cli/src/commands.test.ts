@@ -5,6 +5,14 @@ import { join } from "node:path";
 import { SqliteEventLog } from "@openstrat/persistence";
 import { runOpenStratCli } from "./commands.js";
 
+function lineValue(lines: readonly string[], prefix: string): string {
+  const line = lines.find((entry) => entry.startsWith(prefix));
+  if (!line) {
+    throw new Error(`missing output line: ${prefix}`);
+  }
+  return line.slice(prefix.length);
+}
+
 describe("openstrat CLI commands", () => {
   it("initializes, doctors, runs fake chat, lists artifacts, upgrades dry-run, and purges", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
@@ -108,6 +116,65 @@ describe("openstrat CLI commands", () => {
     expect(chat.stdout.join("\n")).toContain("Final assistant text from Codex.");
     expect(chat.stdout.join("\n")).toContain("runtime: codex_app_server");
     expect(chat.stdout.join("\n")).not.toContain("OpenStrat chat session completed.");
+  });
+
+  it("resumes Codex app-server chat sessions from persisted bindings", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome };
+
+    const first = await runOpenStratCli({
+      argv: ["chat", "--prompt", "hello"],
+      cwd,
+      env
+    });
+    const sessionId = lineValue(first.stdout, "session: ");
+    const codexThreadId = lineValue(first.stdout, "codex thread: ");
+    const transcriptRef = lineValue(first.stdout, "transcript: ");
+    const resumed = await runOpenStratCli({
+      argv: ["chat", "--resume", sessionId, "--prompt", "continue"],
+      cwd,
+      env
+    });
+
+    expect(first.exitCode).toBe(0);
+    expect(resumed.exitCode).toBe(0);
+    expect(resumed.stdout.join("\n")).toContain(`session: ${sessionId}`);
+    expect(resumed.stdout.join("\n")).toContain(`codex thread: ${codexThreadId}`);
+    expect(resumed.stdout.join("\n")).toContain(`transcript: ${transcriptRef}`);
+    expect(resumed.stdout.join("\n")).toContain(
+      `resumed codex thread: ${codexThreadId}`
+    );
+
+    const binding = JSON.parse(
+      readFileSync(
+        join(
+          userHome,
+          ".openstrat",
+          "dev-v0",
+          "agent-runtime",
+          "codex-app-server-bindings",
+          `${sessionId}.json`
+        ),
+        "utf8"
+      )
+    ) as { codex_thread_id: string; transcript_ref: string };
+    expect(binding).toMatchObject({
+      codex_thread_id: codexThreadId,
+      transcript_ref: transcriptRef
+    });
+
+    const events = new SqliteEventLog(
+      join(userHome, ".openstrat", "dev-v0", "state.sqlite")
+    );
+    expect(
+      events.list(`agent_sessions/${sessionId}`).map((event) => event.type)
+    ).toEqual(expect.arrayContaining(["agent.runtime.session_resumed"]));
+    events.close();
+
+    expect(readFileSync(transcriptRef, "utf8")).toContain(
+      "agent.runtime.session_resumed"
+    );
   });
 
   it("ingests fixture market data and reads typed market snapshots", async () => {
