@@ -3,6 +3,7 @@ import {
   type AgentSessionManifest
 } from "@openstrat/domain";
 import type { EventLogRepository } from "@openstrat/persistence";
+import type { AgentToolGateway } from "@openstrat/workers";
 import {
   appendFileSync,
   existsSync,
@@ -74,6 +75,7 @@ export interface CodexAppServerRuntimeAdapterDependencies {
   bindingStore?: CodexAppServerBindingStore;
   events?: EventLogRepository;
   now?: () => string;
+  toolGateway?: AgentToolGateway;
   transcriptStore?: CodexAppServerTranscriptStore;
 }
 
@@ -82,8 +84,27 @@ export interface FakeCodexAppServerRuntimeAdapterOptions {
   events?: EventLogRepository;
   now?: () => string;
   responseText?: string;
+  runtimeEvents?: readonly CodexAppServerRuntimeEvent[];
+  toolGateway?: AgentToolGateway;
   transcriptStore?: CodexAppServerTranscriptStore;
 }
+
+export type CodexAppServerRuntimeEvent =
+  | {
+      type: "tool_call_requested";
+      tool_call_id?: string;
+      tool_name: string;
+      arguments?: Record<string, unknown>;
+    }
+  | {
+      type: "message_delta";
+      delta?: string;
+    }
+  | {
+      type: "turn_completed";
+      assistant_text?: string;
+      message_count?: number;
+    };
 
 export interface CodexAppServerThreadBinding {
   openstrat_session_id: string;
@@ -219,16 +240,20 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
   private readonly bindingStore: CodexAppServerBindingStore | undefined;
   private readonly events: EventLogRepository | undefined;
   private readonly now: () => string;
-  private readonly responseText: string;
+  private readonly runtimeEvents: readonly CodexAppServerRuntimeEvent[];
   private readonly sessions = new Map<string, FakeActiveCodexSession>();
   private readonly promptHistory = new Map<string, string[]>();
+  private readonly toolGateway: AgentToolGateway | undefined;
   private readonly transcriptStore: CodexAppServerTranscriptStore | undefined;
 
   constructor(options: FakeCodexAppServerRuntimeAdapterOptions = {}) {
     this.bindingStore = options.bindingStore;
     this.events = options.events;
     this.now = options.now ?? (() => new Date().toISOString());
-    this.responseText = options.responseText ?? "Fake Codex app-server response.";
+    this.runtimeEvents =
+      options.runtimeEvents ??
+      defaultRuntimeEvents(options.responseText ?? "Fake Codex app-server response.");
+    this.toolGateway = options.toolGateway;
     this.transcriptStore = options.transcriptStore;
   }
 
@@ -282,25 +307,9 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
       runtime: session.runtime,
       type: "agent.runtime.turn_started"
     });
-    this.appendRuntimeEvent({
-      manifest: session.manifest,
-      occurred_at: occurredAt,
-      payload: {
-        delta: this.responseText
-      },
-      runtime: session.runtime,
-      type: "agent.runtime.message_delta"
-    });
-    this.appendRuntimeEvent({
-      manifest: session.manifest,
-      occurred_at: occurredAt,
-      payload: {
-        assistant_text: this.responseText,
-        message_count: 1
-      },
-      runtime: session.runtime,
-      type: "agent.runtime.turn_completed"
-    });
+    for (const runtimeEvent of this.runtimeEvents) {
+      await this.projectRuntimeEvent(session, occurredAt, runtimeEvent);
+    }
   }
 
   async dispose(sessionId: string): Promise<void> {
@@ -432,6 +441,156 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
       data: event.payload
     });
   }
+
+  private async projectRuntimeEvent(
+    session: FakeActiveCodexSession,
+    occurredAt: string,
+    runtimeEvent: CodexAppServerRuntimeEvent
+  ): Promise<void> {
+    if (runtimeEvent.type === "message_delta") {
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          delta: runtimeEvent.delta ?? ""
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.message_delta"
+      });
+      return;
+    }
+
+    if (runtimeEvent.type === "turn_completed") {
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          ...(runtimeEvent.assistant_text
+            ? { assistant_text: runtimeEvent.assistant_text }
+            : {}),
+          message_count: runtimeEvent.message_count ?? 0
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.turn_completed"
+      });
+      return;
+    }
+
+    await this.routeToolCall(session, occurredAt, runtimeEvent);
+  }
+
+  private async routeToolCall(
+    session: FakeActiveCodexSession,
+    occurredAt: string,
+    runtimeEvent: Extract<CodexAppServerRuntimeEvent, { type: "tool_call_requested" }>
+  ): Promise<void> {
+    const toolCallId = runtimeEvent.tool_call_id ?? `${session.manifest.id}:tool_call`;
+    this.appendRuntimeEvent({
+      manifest: session.manifest,
+      occurred_at: occurredAt,
+      payload: {
+        tool_call_id: toolCallId,
+        tool_name: runtimeEvent.tool_name
+      },
+      runtime: session.runtime,
+      type: "agent.runtime.tool_call_requested"
+    });
+
+    if (session.runtime.disabled_native_tools.includes(runtimeEvent.tool_name)) {
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          tool_call_id: toolCallId,
+          tool_name: runtimeEvent.tool_name,
+          reason: "Codex native tool is disabled by OpenStrat harness policy"
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.tool_call_blocked"
+      });
+      return;
+    }
+
+    if (!session.runtime.enabled_tools.includes(runtimeEvent.tool_name)) {
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          tool_call_id: toolCallId,
+          tool_name: runtimeEvent.tool_name,
+          reason: "tool is not enabled for this Codex app-server session"
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.tool_call_blocked"
+      });
+      return;
+    }
+
+    if (!this.toolGateway) {
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          tool_call_id: toolCallId,
+          tool_name: runtimeEvent.tool_name,
+          reason: "agent tool gateway is not configured"
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.tool_call_blocked"
+      });
+      return;
+    }
+
+    try {
+      const result = await this.toolGateway.invoke({
+        call_id: toolCallId,
+        session_id: session.manifest.id,
+        turn_id: `${session.manifest.id}:turn:${toolCallId}`,
+        tool_name: runtimeEvent.tool_name,
+        arguments: runtimeEvent.arguments ?? {}
+      });
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          tool_call_id: toolCallId,
+          tool_name: runtimeEvent.tool_name,
+          is_error: false,
+          ...gatewayResultRefPayload(result)
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.tool_call_completed"
+      });
+    } catch (error) {
+      this.appendRuntimeEvent({
+        manifest: session.manifest,
+        occurred_at: occurredAt,
+        payload: {
+          tool_call_id: toolCallId,
+          tool_name: runtimeEvent.tool_name,
+          reason: error instanceof Error ? error.message : "agent tool blocked"
+        },
+        runtime: session.runtime,
+        type: "agent.runtime.tool_call_blocked"
+      });
+    }
+  }
+}
+
+function defaultRuntimeEvents(
+  responseText: string
+): readonly CodexAppServerRuntimeEvent[] {
+  return [
+    {
+      type: "message_delta",
+      delta: responseText
+    },
+    {
+      type: "turn_completed",
+      assistant_text: responseText,
+      message_count: 1
+    }
+  ];
 }
 
 function withoutEventType<T extends { event_type: string }>(
@@ -458,4 +617,26 @@ function safeRuntimeId(value: string): string {
 
 function entryId(): string {
   return Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+}
+
+function gatewayResultRefPayload(result: unknown): { result_ref?: string } {
+  if (!isRecord(result)) {
+    return {};
+  }
+  if (typeof result.result_ref === "string" && result.result_ref.length > 0) {
+    return { result_ref: result.result_ref };
+  }
+  const latestPrice = result.latest_price;
+  if (
+    isRecord(latestPrice) &&
+    typeof latestPrice.raw_ref === "string" &&
+    latestPrice.raw_ref.length > 0
+  ) {
+    return { result_ref: latestPrice.raw_ref };
+  }
+  return {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

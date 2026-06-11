@@ -4,6 +4,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteEventLog } from "@openstrat/persistence";
+import type { AgentToolGateway } from "@openstrat/workers";
 import {
   FakeCodexAppServerRuntimeAdapter,
   FileCodexAppServerBindingStore,
@@ -215,7 +216,158 @@ describe("Codex app-server runtime adapter", () => {
         .at(-1)?.data?.type
     ).toBe("agent.runtime.session_resumed");
   });
+
+  it("routes Codex app-server tool requests through the agent tool gateway", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openstrat-codex-runtime-"));
+    const events = new SqliteEventLog(":memory:");
+    const gatewayInvocations: unknown[] = [];
+    const adapter = new FakeCodexAppServerRuntimeAdapter({
+      events,
+      now: () => now,
+      runtimeEvents: [
+        {
+          type: "tool_call_requested",
+          tool_call_id: "tool_call_market",
+          tool_name: "market_data.read_snapshot",
+          arguments: {
+            canonical_symbol: "ETH-PERP"
+          }
+        },
+        {
+          type: "message_delta",
+          delta: "Market data received."
+        },
+        {
+          type: "turn_completed",
+          assistant_text: "Market data received.",
+          message_count: 1
+        }
+      ],
+      toolGateway: recordingToolGateway(gatewayInvocations),
+      transcriptStore: new FileCodexAppServerTranscriptStore(root)
+    });
+
+    const session = await adapter.startSession({
+      manifest: codexManifest("agent_session_codex_tool_bridge"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+    await adapter.prompt({
+      session_id: session.session_id,
+      prompt: "Read the latest ETH market data."
+    });
+
+    expect(gatewayInvocations).toEqual([
+      {
+        call_id: "tool_call_market",
+        session_id: "agent_session_codex_tool_bridge",
+        turn_id: "agent_session_codex_tool_bridge:turn:tool_call_market",
+        tool_name: "market_data.read_snapshot",
+        arguments: {
+          canonical_symbol: "ETH-PERP"
+        }
+      }
+    ]);
+    expect(
+      events.list("agent_sessions/agent_session_codex_tool_bridge").map((event) => ({
+        type: event.type,
+        payload: event.payload
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "agent.runtime.tool_call_requested",
+          payload: expect.objectContaining({
+            tool_call_id: "tool_call_market",
+            tool_name: "market_data.read_snapshot"
+          })
+        }),
+        expect.objectContaining({
+          type: "agent.runtime.tool_call_completed",
+          payload: expect.objectContaining({
+            tool_call_id: "tool_call_market",
+            tool_name: "market_data.read_snapshot",
+            is_error: false,
+            result_ref: "market-data/hyperliquid/eth/latest.json"
+          })
+        })
+      ])
+    );
+  });
+
+  it("blocks disabled Codex native tool requests before gateway invocation", async () => {
+    const events = new SqliteEventLog(":memory:");
+    const gatewayInvocations: unknown[] = [];
+    const adapter = new FakeCodexAppServerRuntimeAdapter({
+      events,
+      now: () => now,
+      runtimeEvents: [
+        {
+          type: "tool_call_requested",
+          tool_call_id: "tool_call_shell",
+          tool_name: "shell",
+          arguments: {
+            command: "pwd"
+          }
+        },
+        {
+          type: "turn_completed",
+          assistant_text: "Native tool request blocked.",
+          message_count: 1
+        }
+      ],
+      toolGateway: recordingToolGateway(gatewayInvocations)
+    });
+
+    const session = await adapter.startSession({
+      manifest: codexManifest("agent_session_codex_native_block"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+    await adapter.prompt({
+      session_id: session.session_id,
+      prompt: "Check the current directory."
+    });
+
+    expect(gatewayInvocations).toEqual([]);
+    expect(
+      events.list("agent_sessions/agent_session_codex_native_block").map((event) => ({
+        type: event.type,
+        payload: event.payload
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "agent.runtime.tool_call_requested",
+          payload: expect.objectContaining({
+            tool_call_id: "tool_call_shell",
+            tool_name: "shell"
+          })
+        }),
+        expect.objectContaining({
+          type: "agent.runtime.tool_call_blocked",
+          payload: expect.objectContaining({
+            tool_call_id: "tool_call_shell",
+            tool_name: "shell",
+            reason: "Codex native tool is disabled by OpenStrat harness policy"
+          })
+        })
+      ])
+    );
+  });
 });
+
+function recordingToolGateway(invocations: unknown[]): AgentToolGateway {
+  return {
+    tool_names: ["market_data.read_snapshot"],
+    async invoke(input) {
+      invocations.push(input);
+      return {
+        latest_price: {
+          raw_ref: "market-data/hyperliquid/eth/latest.json"
+        }
+      };
+    }
+  } as AgentToolGateway;
+}
 
 function codexManifest(id: string) {
   return {
