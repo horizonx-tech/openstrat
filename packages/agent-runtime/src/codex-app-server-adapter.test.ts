@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SqliteEventLog } from "@openstrat/persistence";
 import {
   FakeCodexAppServerRuntimeAdapter,
+  FileCodexAppServerBindingStore,
+  FileCodexAppServerTranscriptStore,
   type CodexAppServerRuntimeAdapter
 } from "./codex-app-server-adapter.js";
 
@@ -89,6 +96,124 @@ describe("Codex app-server runtime adapter", () => {
         toolNames: []
       })
     ).rejects.toThrow(/codex_app_server/);
+  });
+
+  it("persists Codex thread bindings and projects runtime transcripts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openstrat-codex-runtime-"));
+    const events = new SqliteEventLog(":memory:");
+    const bindingStore = new FileCodexAppServerBindingStore(root);
+    const transcriptStore = new FileCodexAppServerTranscriptStore(root);
+    const adapter = new FakeCodexAppServerRuntimeAdapter({
+      bindingStore,
+      events,
+      now: () => now,
+      transcriptStore
+    });
+
+    const runtime = await adapter.startSession({
+      manifest: codexManifest("agent_session_codex_bound"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+    await adapter.prompt({
+      session_id: runtime.session_id,
+      prompt: "Research BTC funding context."
+    });
+
+    expect(bindingStore.read("agent_session_codex_bound")).toMatchObject({
+      openstrat_session_id: "agent_session_codex_bound",
+      runtime_session_id: "codex_app_server_agent_session_codex_bound",
+      codex_thread_id: "codex_thread_agent_session_codex_bound",
+      transcript_ref: runtime.transcript_ref,
+      created_at: now,
+      updated_at: now
+    });
+    expect(runtime.transcript_ref.startsWith(root)).toBe(true);
+    expect(runtime.transcript_ref).toContain("agent-runtime");
+    expect(existsSync(runtime.transcript_ref)).toBe(true);
+
+    const stream = events.list("agent_sessions/agent_session_codex_bound");
+    expect(stream.map((event) => event.type)).toEqual([
+      "agent.runtime.session_started",
+      "agent.runtime.turn_started",
+      "agent.runtime.message_delta",
+      "agent.runtime.turn_completed"
+    ]);
+    expect(stream.at(0)).toMatchObject({
+      type: "agent.runtime.session_started",
+      metadata: {
+        transcript_ref: runtime.transcript_ref
+      },
+      payload: {
+        codex_thread_id: "codex_thread_agent_session_codex_bound",
+        runtime: "codex_app_server",
+        runtime_session_id: "codex_app_server_agent_session_codex_bound"
+      }
+    });
+
+    const lines = (await readFile(runtime.transcript_ref, "utf8")).trim().split("\n");
+    expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
+      type: "session",
+      version: 3,
+      id: "agent_session_codex_bound"
+    });
+    expect(
+      lines
+        .map((line) => JSON.parse(line) as { data?: { type?: string } })
+        .filter((entry) => entry.data)
+        .map((entry) => entry.data?.type)
+    ).toEqual([
+      "agent.runtime.session_started",
+      "agent.runtime.turn_started",
+      "agent.runtime.message_delta",
+      "agent.runtime.turn_completed"
+    ]);
+  });
+
+  it("resumes with durable Codex thread bindings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openstrat-codex-runtime-"));
+    const events = new SqliteEventLog(":memory:");
+    const bindingStore = new FileCodexAppServerBindingStore(root);
+    const transcriptStore = new FileCodexAppServerTranscriptStore(root);
+    const adapter = new FakeCodexAppServerRuntimeAdapter({
+      bindingStore,
+      events,
+      now: () => now,
+      transcriptStore
+    });
+
+    const started = await adapter.startSession({
+      manifest: codexManifest("agent_session_codex_resume_bound"),
+      toolNames: []
+    });
+    const resumed = await adapter.resumeSession({
+      manifest: codexManifest("agent_session_codex_resume_bound"),
+      toolNames: [],
+      codex_thread_id: started.codex_thread_id,
+      transcript_ref: started.transcript_ref
+    });
+
+    expect(resumed).toMatchObject({
+      codex_thread_id: started.codex_thread_id,
+      resumed_from_codex_thread_id: started.codex_thread_id,
+      transcript_ref: started.transcript_ref
+    });
+    expect(bindingStore.read("agent_session_codex_resume_bound")).toMatchObject({
+      openstrat_session_id: "agent_session_codex_resume_bound",
+      codex_thread_id: started.codex_thread_id,
+      transcript_ref: started.transcript_ref
+    });
+    expect(
+      events
+        .list("agent_sessions/agent_session_codex_resume_bound")
+        .map((event) => event.type)
+    ).toEqual(["agent.runtime.session_started", "agent.runtime.session_resumed"]);
+    expect(
+      transcriptStore
+        .read(started.transcript_ref)
+        .map((entry) => entry as { data?: { type?: string } })
+        .filter((entry) => entry.data)
+        .at(-1)?.data?.type
+    ).toBe("agent.runtime.session_resumed");
   });
 });
 
