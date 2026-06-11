@@ -18,13 +18,29 @@ export const AgentRuntimeKindSchema = z.enum([
   "fake"
 ]);
 
-export const AgentRuntimeConfigSchema = z.object({
-  kind: AgentRuntimeKindSchema,
+const AgentRuntimeConfigBaseSchema = z.object({
   adapter: NonEmptyStringSchema,
   model_profile_id: NonEmptyStringSchema.optional(),
   provider: NonEmptyStringSchema.optional(),
   model: NonEmptyStringSchema.optional()
 });
+
+export const AgentRuntimeConfigSchema = z.discriminatedUnion("kind", [
+  AgentRuntimeConfigBaseSchema.extend({
+    kind: z.literal("pi")
+  }),
+  AgentRuntimeConfigBaseSchema.extend({
+    kind: z.literal("codex_app_server"),
+    model_profile_id: NonEmptyStringSchema,
+    provider: z.literal("openai-codex")
+  }),
+  AgentRuntimeConfigBaseSchema.extend({
+    kind: z.literal("openclaw_compat")
+  }),
+  AgentRuntimeConfigBaseSchema.extend({
+    kind: z.literal("fake")
+  })
+]);
 
 export const AgentArtifactKindSchema = z.enum([
   "agent_transcript",

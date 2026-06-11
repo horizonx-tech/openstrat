@@ -64,6 +64,60 @@ describe("agent domain contracts", () => {
     ).toBe(false);
   });
 
+  it("distinguishes Pi and Codex app-server runtime ownership", () => {
+    expect(
+      AgentSessionManifestSchema.safeParse({
+        id: "agent_session_codex_001",
+        created_at: now,
+        purpose: "strategy_research",
+        autonomy_mode: "strategy_workbench",
+        runtime: {
+          kind: "codex_app_server",
+          adapter: "@openstrat/agent-runtime/codex-app-server",
+          model_profile_id: "model/openai-codex-subscription",
+          provider: "openai-codex",
+          model: "gpt-5.5"
+        },
+        transcript_ref: {
+          id: "artifact_transcript_codex_001",
+          kind: "agent_transcript",
+          uri: "agent-sessions/agent_session_codex_001/session.jsonl",
+          content_hash: "sha256:transcript",
+          created_at: now,
+          append_only: true
+        },
+        event_stream_id: "agent_sessions/agent_session_codex_001",
+        canonical_ledger_refs: []
+      }).success
+    ).toBe(true);
+
+    expect(
+      AgentSessionManifestSchema.safeParse({
+        id: "agent_session_codex_bad_provider",
+        created_at: now,
+        purpose: "strategy_research",
+        autonomy_mode: "strategy_workbench",
+        runtime: {
+          kind: "codex_app_server",
+          adapter: "@openstrat/agent-runtime/codex-app-server",
+          model_profile_id: "model/openrouter/anthropic/claude",
+          provider: "openrouter",
+          model: "anthropic/claude-sonnet-4-5"
+        },
+        transcript_ref: {
+          id: "artifact_transcript_codex_bad_provider",
+          kind: "agent_transcript",
+          uri: "agent-sessions/agent_session_codex_bad_provider/session.jsonl",
+          content_hash: "sha256:transcript",
+          created_at: now,
+          append_only: true
+        },
+        event_stream_id: "agent_sessions/agent_session_codex_bad_provider",
+        canonical_ledger_refs: []
+      }).success
+    ).toBe(false);
+  });
+
   it("validates runtime events, turns, grants, and tool call records", () => {
     expect(
       AgentToolGrantSchema.safeParse({

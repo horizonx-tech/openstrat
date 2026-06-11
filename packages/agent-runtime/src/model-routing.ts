@@ -14,12 +14,40 @@ export const OpenStratModelAuthSchema = z.discriminatedUnion("kind", [
   })
 ]);
 
-export const OpenStratModelProfileSchema = z.object({
-  id: z.string().trim().min(1),
-  provider: z.string().trim().min(1),
-  model: z.string().trim().min(1),
-  auth: OpenStratModelAuthSchema
-});
+export const OpenStratModelProfileSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    runtime_kind: z.enum(["pi", "codex_app_server"]),
+    provider: z.string().trim().min(1),
+    model: z.string().trim().min(1),
+    auth: OpenStratModelAuthSchema
+  })
+  .superRefine((profile, ctx) => {
+    const codexOAuth = profile.auth.kind === "openai_codex_oauth";
+    if (profile.runtime_kind === "codex_app_server") {
+      if (profile.provider !== "openai-codex") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "codex_app_server profiles must use openai-codex provider",
+          path: ["provider"]
+        });
+      }
+      if (!codexOAuth) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "codex_app_server profiles must use OpenAI Codex OAuth",
+          path: ["auth", "kind"]
+        });
+      }
+    }
+    if (codexOAuth && profile.runtime_kind !== "codex_app_server") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "OpenAI Codex OAuth is only valid for codex_app_server profiles",
+        path: ["runtime_kind"]
+      });
+    }
+  });
 
 export type OpenStratModelAuth = z.infer<typeof OpenStratModelAuthSchema>;
 export type OpenStratModelProfile = z.infer<typeof OpenStratModelProfileSchema>;

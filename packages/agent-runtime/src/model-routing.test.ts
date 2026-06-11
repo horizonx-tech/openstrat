@@ -10,6 +10,7 @@ describe("OpenStrat Pi model routing", () => {
     expect(
       OpenStratModelProfileSchema.safeParse({
         id: "model/anthropic-sonnet",
+        runtime_kind: "pi",
         provider: "anthropic",
         model: "claude-sonnet-4-5",
         auth: {
@@ -22,6 +23,7 @@ describe("OpenStrat Pi model routing", () => {
     expect(
       OpenStratModelProfileSchema.safeParse({
         id: "model/openai-codex-subscription",
+        runtime_kind: "codex_app_server",
         provider: "openai-codex",
         model: "gpt-5.5",
         auth: {
@@ -32,6 +34,47 @@ describe("OpenStrat Pi model routing", () => {
     ).toBe(true);
   });
 
+  it("keeps future OpenRouter profiles on the BYOK generic runtime path", () => {
+    expect(
+      OpenStratModelProfileSchema.safeParse({
+        id: "model/openrouter/anthropic/claude-sonnet",
+        runtime_kind: "pi",
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4-5",
+        auth: {
+          kind: "byok",
+          provider: "openrouter"
+        }
+      }).success
+    ).toBe(true);
+
+    expect(
+      OpenStratModelProfileSchema.safeParse({
+        id: "model/openrouter/bad-codex-oauth",
+        runtime_kind: "pi",
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4-5",
+        auth: {
+          kind: "openai_codex_oauth",
+          auth_provider: "openai-codex"
+        }
+      }).success
+    ).toBe(false);
+
+    expect(
+      OpenStratModelProfileSchema.safeParse({
+        id: "model/openai-codex-bad-byok",
+        runtime_kind: "codex_app_server",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        auth: {
+          kind: "byok",
+          provider: "openai-codex"
+        }
+      }).success
+    ).toBe(false);
+  });
+
   it("uses runtime BYOK credentials without persisting secrets to files", async () => {
     const auth = createInMemoryPiModelAuth();
     const router = createOpenStratModelRouter({ auth });
@@ -40,6 +83,7 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/anthropic-sonnet",
+      runtime_kind: "pi",
       provider: "anthropic",
       model: "claude-sonnet-4-5",
       auth: {
@@ -61,6 +105,7 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/missing-openai",
+      runtime_kind: "codex_app_server",
       provider: "openai-codex",
       model: "gpt-5.5",
       auth: {
@@ -90,6 +135,7 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/openai-codex-subscription",
+      runtime_kind: "codex_app_server",
       provider: "openai-codex",
       model: "gpt-5.5",
       auth: {
