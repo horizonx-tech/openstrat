@@ -31,6 +31,20 @@ openstrat reset --purge
 openstrat doctor
 ```
 
+Machine-readable output:
+
+```bash
+openstrat doctor --json
+openstrat market snapshot BTC-PERP --json
+```
+
+`--json` is a global flag. It suppresses intermediate human stdout/stderr and
+emits one JSON line with an `AgentResultEnvelope`:
+
+- `completed` for successful commands
+- `blocked` for CLI contract failures such as usage errors or unknown commands
+- `failed` for runtime or project-state failures
+
 ## Agent Runtime
 
 `openstrat chat` defaults to the Codex app-server runtime:
