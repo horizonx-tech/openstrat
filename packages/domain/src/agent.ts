@@ -8,6 +8,7 @@ import {
   JsonRecordSchema,
   NonEmptyStringSchema,
   PositiveFiniteSchema,
+  ProposalObjectRefSchema,
   SourceRefSchema
 } from "./common.js";
 
@@ -228,6 +229,9 @@ const AgentProposalBaseSchema = z
     artifact_ref: AgentArtifactRefSchema.refine(
       (ref) => ref.kind === "proposal",
       "proposal artifacts must use proposal artifact refs"
+    ).refine(
+      (ref) => ProposalObjectRefSchema.safeParse(ref.uri).success,
+      "proposal artifacts must point at proposal object storage"
     ),
     promotion_event_ref: SourceRefSchema.optional()
   })

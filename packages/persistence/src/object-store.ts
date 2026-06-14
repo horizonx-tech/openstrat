@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
-import { NonEmptyStringSchema } from "@openstrat/domain";
+import { ObjectRefSchema } from "@openstrat/domain";
 
-export const ObjectRefSchema = NonEmptyStringSchema;
+export { ObjectRefSchema };
 
 export interface PutObjectOptions {
   overwrite?: boolean;
