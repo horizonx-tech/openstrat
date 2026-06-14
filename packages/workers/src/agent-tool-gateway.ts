@@ -1,4 +1,5 @@
 import {
+  AgentResultEnvelopeSchema,
   AgentToolCallRecordSchema,
   BacktestRequestSchema,
   DeploymentGateSchema,
@@ -326,6 +327,12 @@ function recordToolCompleted(
         : `${toolName}:${input.call_id}`,
     side_effect: payload.side_effect
   });
+  const result = AgentResultEnvelopeSchema.parse({
+    status: "completed",
+    output_ref: record.output_ref,
+    result_ref: record.output_ref,
+    side_effect: payload.side_effect
+  });
 
   dependencies.events.append({
     stream_id: streamId(input.session_id),
@@ -333,6 +340,7 @@ function recordToolCompleted(
     occurred_at: occurredAt,
     payload: {
       ...payload,
+      result,
       tool_call: record,
       tool_call_id: input.call_id,
       tool_name: toolName
@@ -359,6 +367,12 @@ function recordToolFailure(
     error: typeof payload.error === "string" ? payload.error : "tool failed",
     side_effect: "none"
   });
+  const error = typeof payload.error === "string" ? payload.error : "tool failed";
+  const result = AgentResultEnvelopeSchema.parse({
+    status: "failed",
+    error,
+    side_effect: "none"
+  });
 
   dependencies.events.append({
     stream_id: streamId(input.session_id),
@@ -366,6 +380,7 @@ function recordToolFailure(
     occurred_at: occurredAt,
     payload: {
       ...payload,
+      result,
       tool_call: record,
       tool_call_id: input.call_id,
       tool_name: toolName,
@@ -393,6 +408,12 @@ function recordToolBlocked(
     error: typeof payload.reason === "string" ? payload.reason : "tool blocked",
     side_effect: "none"
   });
+  const reason = typeof payload.reason === "string" ? payload.reason : "tool blocked";
+  const result = AgentResultEnvelopeSchema.parse({
+    status: "blocked",
+    reason,
+    side_effect: "none"
+  });
 
   dependencies.events.append({
     stream_id: streamId(input.session_id),
@@ -400,6 +421,7 @@ function recordToolBlocked(
     occurred_at: occurredAt,
     payload: {
       ...payload,
+      result,
       tool_call: record,
       tool_call_id: input.call_id,
       tool_name: toolName,

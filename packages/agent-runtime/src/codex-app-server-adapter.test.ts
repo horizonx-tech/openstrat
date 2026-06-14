@@ -142,6 +142,9 @@ describe("Codex app-server runtime adapter", () => {
     expect(stream.at(0)).toMatchObject({
       type: "agent.runtime.session_started",
       metadata: {
+        codex_thread_id: "codex_thread_agent_session_codex_bound",
+        runtime: "codex_app_server",
+        runtime_session_id: "codex_app_server_agent_session_codex_bound",
         transcript_ref: runtime.transcript_ref
       },
       payload: {
@@ -286,6 +289,11 @@ describe("Codex app-server runtime adapter", () => {
           payload: expect.objectContaining({
             tool_call_id: "tool_call_market",
             tool_name: "market_data.read_snapshot",
+            result: {
+              status: "completed",
+              result_ref: "market-data/hyperliquid/eth/latest.json",
+              side_effect: "none"
+            },
             is_error: false,
             result_ref: "market-data/hyperliquid/eth/latest.json"
           })
@@ -347,6 +355,11 @@ describe("Codex app-server runtime adapter", () => {
           payload: expect.objectContaining({
             tool_call_id: "tool_call_shell",
             tool_name: "shell",
+            result: {
+              status: "blocked",
+              reason: "Codex native tool is disabled by OpenStrat harness policy",
+              side_effect: "none"
+            },
             reason: "Codex native tool is disabled by OpenStrat harness policy"
           })
         })

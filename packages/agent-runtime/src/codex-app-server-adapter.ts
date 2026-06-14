@@ -1,4 +1,5 @@
 import {
+  AgentResultEnvelopeSchema,
   AgentSessionManifestSchema,
   type AgentSessionManifest
 } from "@openstrat/domain";
@@ -433,6 +434,9 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
       occurred_at: event.occurred_at,
       payload: event.payload,
       metadata: {
+        codex_thread_id: event.runtime.codex_thread_id,
+        runtime: event.manifest.runtime.kind,
+        runtime_session_id: event.runtime.runtime_session_id,
         transcript_ref: event.runtime.transcript_ref
       }
     });
@@ -497,13 +501,15 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
     });
 
     if (session.runtime.disabled_native_tools.includes(runtimeEvent.tool_name)) {
+      const reason = "Codex native tool is disabled by OpenStrat harness policy";
       this.appendRuntimeEvent({
         manifest: session.manifest,
         occurred_at: occurredAt,
         payload: {
           tool_call_id: toolCallId,
           tool_name: runtimeEvent.tool_name,
-          reason: "Codex native tool is disabled by OpenStrat harness policy"
+          reason,
+          result: blockedResult(reason)
         },
         runtime: session.runtime,
         type: "agent.runtime.tool_call_blocked"
@@ -512,13 +518,15 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
     }
 
     if (!session.runtime.enabled_tools.includes(runtimeEvent.tool_name)) {
+      const reason = "tool is not enabled for this Codex app-server session";
       this.appendRuntimeEvent({
         manifest: session.manifest,
         occurred_at: occurredAt,
         payload: {
           tool_call_id: toolCallId,
           tool_name: runtimeEvent.tool_name,
-          reason: "tool is not enabled for this Codex app-server session"
+          reason,
+          result: blockedResult(reason)
         },
         runtime: session.runtime,
         type: "agent.runtime.tool_call_blocked"
@@ -527,13 +535,15 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
     }
 
     if (!this.toolGateway) {
+      const reason = "agent tool gateway is not configured";
       this.appendRuntimeEvent({
         manifest: session.manifest,
         occurred_at: occurredAt,
         payload: {
           tool_call_id: toolCallId,
           tool_name: runtimeEvent.tool_name,
-          reason: "agent tool gateway is not configured"
+          reason,
+          result: blockedResult(reason)
         },
         runtime: session.runtime,
         type: "agent.runtime.tool_call_blocked"
@@ -549,6 +559,7 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
         tool_name: runtimeEvent.tool_name,
         arguments: runtimeEvent.arguments ?? {}
       });
+      const resultRefPayload = gatewayResultRefPayload(result);
       this.appendRuntimeEvent({
         manifest: session.manifest,
         occurred_at: occurredAt,
@@ -556,19 +567,22 @@ export class FakeCodexAppServerRuntimeAdapter implements CodexAppServerRuntimeAd
           tool_call_id: toolCallId,
           tool_name: runtimeEvent.tool_name,
           is_error: false,
-          ...gatewayResultRefPayload(result)
+          result: completedResult(resultRefPayload.result_ref),
+          ...resultRefPayload
         },
         runtime: session.runtime,
         type: "agent.runtime.tool_call_completed"
       });
     } catch (error) {
+      const reason = error instanceof Error ? error.message : "agent tool blocked";
       this.appendRuntimeEvent({
         manifest: session.manifest,
         occurred_at: occurredAt,
         payload: {
           tool_call_id: toolCallId,
           tool_name: runtimeEvent.tool_name,
-          reason: error instanceof Error ? error.message : "agent tool blocked"
+          reason,
+          result: blockedResult(reason)
         },
         runtime: session.runtime,
         type: "agent.runtime.tool_call_blocked"
@@ -635,6 +649,22 @@ function gatewayResultRefPayload(result: unknown): { result_ref?: string } {
     return { result_ref: latestPrice.raw_ref };
   }
   return {};
+}
+
+function completedResult(resultRef: string | undefined) {
+  return AgentResultEnvelopeSchema.parse({
+    status: "completed",
+    ...(resultRef ? { result_ref: resultRef } : {}),
+    side_effect: "none"
+  });
+}
+
+function blockedResult(reason: string) {
+  return AgentResultEnvelopeSchema.parse({
+    status: "blocked",
+    reason,
+    side_effect: "none"
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

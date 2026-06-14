@@ -1,4 +1,5 @@
 import {
+  AgentResultEnvelopeSchema,
   AgentSessionManifestSchema,
   type AgentSessionManifest
 } from "@openstrat/domain";
@@ -372,6 +373,11 @@ function appendRuntimeEvent(
     occurred_at: event.occurred_at,
     payload: event.payload,
     metadata: {
+      runtime: event.manifest.runtime.kind,
+      runtime_session_id:
+        typeof event.payload.runtime_session_id === "string"
+          ? event.payload.runtime_session_id
+          : undefined,
       transcript_ref: event.transcript_ref
     }
   });
@@ -462,7 +468,8 @@ async function projectPiEvent(
           payload: {
             tool_call_id: event.toolCallId,
             tool_name: event.toolName,
-            reason: "agent tool is forbidden by runtime policy"
+            reason: "agent tool is forbidden by runtime policy",
+            result: blockedResult("agent tool is forbidden by runtime policy")
           }
         });
         return;
@@ -499,10 +506,12 @@ async function projectPiEvent(
             tool_call_id: toolCallId,
             tool_name: event.toolName,
             is_error: false,
+            result: completedResult(gatewayResultRefPayload(result).result_ref),
             ...gatewayResultRefPayload(result)
           }
         });
       } catch (error) {
+        const reason = error instanceof Error ? error.message : "agent tool blocked";
         appendRuntimeEvent(dependencies, {
           manifest,
           occurred_at: occurredAt,
@@ -511,7 +520,8 @@ async function projectPiEvent(
           payload: {
             tool_call_id: toolCallId,
             tool_name: event.toolName,
-            reason: error instanceof Error ? error.message : "agent tool blocked"
+            reason,
+            result: blockedResult(reason)
           }
         });
       }
@@ -528,7 +538,11 @@ async function projectPiEvent(
       payload: {
         tool_call_id: event.toolCallId,
         tool_name: event.toolName,
-        is_error: event.isError === true
+        is_error: event.isError === true,
+        result:
+          event.isError === true
+            ? failedResult("Pi tool execution reported an error")
+            : completedResult(undefined)
       }
     });
     return;
@@ -616,6 +630,30 @@ function gatewayResultRefPayload(result: unknown): { result_ref?: string } {
     return { result_ref: latestPrice.raw_ref };
   }
   return {};
+}
+
+function completedResult(resultRef: string | undefined) {
+  return AgentResultEnvelopeSchema.parse({
+    status: "completed",
+    ...(resultRef ? { result_ref: resultRef } : {}),
+    side_effect: "none"
+  });
+}
+
+function blockedResult(reason: string) {
+  return AgentResultEnvelopeSchema.parse({
+    status: "blocked",
+    reason,
+    side_effect: "none"
+  });
+}
+
+function failedResult(error: string) {
+  return AgentResultEnvelopeSchema.parse({
+    status: "failed",
+    error,
+    side_effect: "none"
+  });
 }
 
 class FakePiAgentSession implements PiAgentSessionLike {

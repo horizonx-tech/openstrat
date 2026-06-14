@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   AgentArtifactRefSchema,
   AgentRuntimeEventSchema,
+  AgentRuntimeEventMetadataSchema,
+  AgentResultEnvelopeSchema,
   AgentSessionManifestSchema,
   AgentToolCallRecordSchema,
   AgentToolGrantSchema,
+  AgentToolLifecyclePayloadSchema,
   AgentTurnSchema,
   BacktestRequestSchema,
   BacktestReportRefSchema,
@@ -162,6 +165,15 @@ describe("agent domain contracts", () => {
     ).toBe(true);
 
     expect(
+      AgentRuntimeEventMetadataSchema.safeParse({
+        transcript_ref: "agent-runtime/sessions/agent_session_001.jsonl",
+        runtime: "codex_app_server",
+        runtime_session_id: "codex_app_server_agent_session_001",
+        codex_thread_id: "codex_thread_agent_session_001"
+      }).success
+    ).toBe(true);
+
+    expect(
       AgentToolCallRecordSchema.safeParse({
         id: "tool_call_001",
         session_id: "agent_session_001",
@@ -186,6 +198,49 @@ describe("agent domain contracts", () => {
         status: "completed",
         requested_at: now,
         side_effect: "live_execution"
+      }).success
+    ).toBe(false);
+
+    expect(
+      AgentResultEnvelopeSchema.safeParse({
+        status: "completed",
+        result_ref: "agent-artifacts/tool_call_001.result.json",
+        side_effect: "none"
+      }).success
+    ).toBe(true);
+
+    expect(
+      AgentResultEnvelopeSchema.safeParse({
+        status: "blocked",
+        reason: "tool is not enabled",
+        side_effect: "none"
+      }).success
+    ).toBe(true);
+
+    expect(
+      AgentResultEnvelopeSchema.safeParse({
+        status: "failed",
+        error: "market data reader failed",
+        side_effect: "none"
+      }).success
+    ).toBe(true);
+
+    expect(
+      AgentToolLifecyclePayloadSchema.safeParse({
+        tool_call_id: "tool_call_001",
+        tool_name: "market_data.read_snapshot",
+        result: {
+          status: "blocked",
+          reason: "tool is not enabled",
+          side_effect: "none"
+        }
+      }).success
+    ).toBe(true);
+
+    expect(
+      AgentResultEnvelopeSchema.safeParse({
+        status: "blocked",
+        side_effect: "none"
       }).success
     ).toBe(false);
   });

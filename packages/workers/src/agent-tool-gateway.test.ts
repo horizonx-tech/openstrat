@@ -94,6 +94,11 @@ describe("agent tool gateway", () => {
         type: "agent.tool_call.completed",
         payload: {
           tool_name: "market_data.read_snapshot",
+          result: {
+            status: "completed",
+            result_ref: "market-data/hyperliquid/eth/latest.json",
+            side_effect: "none"
+          },
           side_effect: "none"
         }
       }
@@ -126,6 +131,11 @@ describe("agent tool gateway", () => {
       payload: {
         tool_call_id: "tool_call_invoke_market",
         tool_name: "market_data.read_snapshot",
+        result: {
+          status: "completed",
+          result_ref: "market-data/hyperliquid/eth/latest.json",
+          side_effect: "none"
+        },
         side_effect: "none"
       }
     });
@@ -268,6 +278,11 @@ describe("agent tool gateway", () => {
       type: "agent.tool_call.blocked",
       payload: {
         tool_name: "orders.write_live",
+        result: {
+          status: "blocked",
+          reason: "tool is not available through the harness-owned agent gateway",
+          side_effect: "none"
+        },
         side_effect: "none"
       }
     });

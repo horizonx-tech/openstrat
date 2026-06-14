@@ -60,6 +60,10 @@ describe("Pi agent runtime adapter", () => {
     expect(session.disabled_builtin_tools).toEqual(["read", "bash", "edit", "write"]);
     expect(events.list("agent_sessions/agent_session_001").at(0)).toMatchObject({
       type: "agent.runtime.session_started",
+      metadata: {
+        runtime: "pi",
+        runtime_session_id: "fake-pi:agent_session_001"
+      },
       payload: {
         runtime: "pi",
         enabled_tools: ["market_data.read_snapshot"]
@@ -182,6 +186,11 @@ describe("Pi agent runtime adapter", () => {
           payload: expect.objectContaining({
             tool_call_id: "tool_call_market",
             tool_name: "market_data.read_snapshot",
+            result: {
+              status: "completed",
+              result_ref: "market-data/hyperliquid/eth/latest.json",
+              side_effect: "none"
+            },
             is_error: false
           })
         })
@@ -291,6 +300,11 @@ describe("Pi agent runtime adapter", () => {
       payload: {
         tool_call_id: "tool_call_native_write",
         tool_name: "write",
+        result: {
+          status: "blocked",
+          reason: "agent tool is forbidden by runtime policy",
+          side_effect: "none"
+        },
         reason: "agent tool is forbidden by runtime policy"
       }
     });
