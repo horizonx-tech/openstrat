@@ -25,11 +25,13 @@ import {
 } from "@openstrat/agent-runtime";
 import { runCandleBacktest } from "@openstrat/backtesting";
 import {
+  AgentResultEnvelopeSchema,
   BacktestReportSchema,
   BotRunManifestSchema,
   DecisionLedgerEntrySchema,
   DeploymentGateSchema,
   MemoryProposalSchema,
+  type AgentResultEnvelope,
   type BotRunManifest,
   type DeploymentGate
 } from "@openstrat/domain";
@@ -145,7 +147,16 @@ export async function runOpenStratCli(
 ): Promise<RunOpenStratCliResult> {
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
+  const argv = [...inputOptions.argv];
+  const jsonMode = removeBooleanFlag(argv, "--json");
+  const commandName = commandNameForJson(argv);
   const emitOut = (line: string) => {
+    stdoutLines.push(line);
+    if (!jsonMode) {
+      inputOptions.stdout?.(line);
+    }
+  };
+  const emitJsonOut = (line: string) => {
     stdoutLines.push(line);
     inputOptions.stdout?.(line);
   };
@@ -156,16 +167,27 @@ export async function runOpenStratCli(
   const env = inputOptions.env ?? process.env;
   const cwd = inputOptions.cwd ?? process.cwd();
   const home = resolveOpenStratHome({ env });
-  const argv = [...inputOptions.argv];
 
   try {
     if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
       printHelp(emitOut);
-      return { exitCode: 0, stdout: stdoutLines, stderr: stderrLines };
+      return finishCliSuccess({
+        commandName,
+        emitJsonOut,
+        jsonMode,
+        stderrLines,
+        stdoutLines
+      });
     }
     if (argv[0] === "--version" || argv[0] === "-v") {
       emitOut(cliVersion);
-      return { exitCode: 0, stdout: stdoutLines, stderr: stderrLines };
+      return finishCliSuccess({
+        commandName,
+        emitJsonOut,
+        jsonMode,
+        stderrLines,
+        stdoutLines
+      });
     }
 
     const command = argv.shift();
@@ -217,14 +239,158 @@ export async function runOpenStratCli(
         commandReset({ argv, emitOut, home });
         break;
       default:
+        if (jsonMode) {
+          return finishCliError({
+            commandName,
+            emitJsonOut,
+            error: new Error(`Unknown command: ${command ?? ""}`),
+            jsonMode,
+            stderrLines,
+            stdoutLines
+          });
+        }
         emitErr(`Unknown command: ${command ?? ""}`);
         return { exitCode: 1, stdout: stdoutLines, stderr: stderrLines };
     }
-    return { exitCode: 0, stdout: stdoutLines, stderr: stderrLines };
+    return finishCliSuccess({
+      commandName,
+      emitJsonOut,
+      jsonMode,
+      stderrLines,
+      stdoutLines
+    });
   } catch (error) {
+    if (jsonMode) {
+      return finishCliError({
+        commandName,
+        emitJsonOut,
+        error,
+        jsonMode,
+        stderrLines,
+        stdoutLines
+      });
+    }
     emitErr(error instanceof Error ? error.message : String(error));
     return { exitCode: 1, stdout: stdoutLines, stderr: stderrLines };
   }
+}
+
+function finishCliSuccess(options: {
+  commandName: string;
+  emitJsonOut: (line: string) => void;
+  jsonMode: boolean;
+  stderrLines: string[];
+  stdoutLines: string[];
+}): RunOpenStratCliResult {
+  if (!options.jsonMode) {
+    return {
+      exitCode: 0,
+      stdout: options.stdoutLines,
+      stderr: options.stderrLines
+    };
+  }
+
+  const outputLines = [...options.stdoutLines];
+  options.stdoutLines.length = 0;
+  options.stderrLines.length = 0;
+  const result = AgentResultEnvelopeSchema.parse({
+    status: "completed",
+    data: {
+      command: options.commandName,
+      output_lines: outputLines
+    },
+    side_effect: "none"
+  });
+  options.emitJsonOut(cliJsonEnvelope(options.commandName, result));
+  return {
+    exitCode: 0,
+    stdout: options.stdoutLines,
+    stderr: options.stderrLines
+  };
+}
+
+function finishCliError(options: {
+  commandName: string;
+  emitJsonOut: (line: string) => void;
+  error: unknown;
+  jsonMode: boolean;
+  stderrLines: string[];
+  stdoutLines: string[];
+}): RunOpenStratCliResult {
+  const message =
+    options.error instanceof Error ? options.error.message : String(options.error);
+  if (!options.jsonMode) {
+    options.stderrLines.push(message);
+    return {
+      exitCode: 1,
+      stdout: options.stdoutLines,
+      stderr: options.stderrLines
+    };
+  }
+
+  options.stdoutLines.length = 0;
+  options.stderrLines.length = 0;
+  const result = cliErrorResult(message);
+  options.emitJsonOut(cliJsonEnvelope(options.commandName, result));
+  return {
+    exitCode: 1,
+    stdout: options.stdoutLines,
+    stderr: options.stderrLines
+  };
+}
+
+function cliJsonEnvelope(commandName: string, result: AgentResultEnvelope): string {
+  return JSON.stringify({
+    command: commandName,
+    result
+  });
+}
+
+function cliErrorResult(message: string): AgentResultEnvelope {
+  if (isCliContractError(message)) {
+    return AgentResultEnvelopeSchema.parse({
+      status: "blocked",
+      reason: message,
+      side_effect: "none"
+    });
+  }
+  return AgentResultEnvelopeSchema.parse({
+    status: "failed",
+    error: message,
+    side_effect: "none"
+  });
+}
+
+function isCliContractError(message: string): boolean {
+  return (
+    message.startsWith("Usage:") ||
+    message.startsWith("Missing required flag:") ||
+    message.startsWith("No prompt provided") ||
+    message.startsWith("Pass exactly one of") ||
+    message.startsWith("Unknown command:")
+  );
+}
+
+function commandNameForJson(argv: readonly string[]): string {
+  const command = argv[0];
+  if (!command || command === "--help" || command === "-h") {
+    return "help";
+  }
+  if (command === "--version" || command === "-v") {
+    return "version";
+  }
+  return command;
+}
+
+function removeBooleanFlag(argv: string[], flag: string): boolean {
+  let found = false;
+  for (let index = argv.length - 1; index >= 0; index -= 1) {
+    if (argv[index] === flag) {
+      argv.splice(index, 1);
+      found = true;
+    }
+  }
+  return found;
 }
 
 async function commandInit(options: {

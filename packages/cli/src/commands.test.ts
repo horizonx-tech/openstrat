@@ -13,6 +13,25 @@ function lineValue(lines: readonly string[], prefix: string): string {
   return line.slice(prefix.length);
 }
 
+interface CliJsonEnvelope {
+  command: string;
+  result: {
+    status: string;
+    reason?: string;
+    error?: string;
+    data?: {
+      command?: string;
+      output_lines?: string[];
+    };
+    side_effect?: string;
+  };
+}
+
+function parseCliJson(lines: readonly string[]): CliJsonEnvelope {
+  expect(lines).toHaveLength(1);
+  return JSON.parse(lines[0] ?? "{}") as CliJsonEnvelope;
+}
+
 describe("openstrat CLI commands", () => {
   it("initializes, doctors, runs fake chat, lists artifacts, upgrades dry-run, and purges", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
@@ -938,5 +957,76 @@ describe("openstrat CLI commands", () => {
     expect(dryRun.exitCode).toBe(0);
     expect(dryRun.stdout.join("\n")).toContain("Dry run");
     expect(dryRun.stdout.join("\n")).toContain("npm i -g openstrat@0.0.2");
+  });
+
+  it("emits a completed machine-readable envelope when --json is passed", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const doctor = await runOpenStratCli({
+      argv: ["doctor", "--json"],
+      cwd,
+      env: {
+        HOME: userHome,
+        OPENSTRAT_FAKE_HYPERLIQUID: "1",
+        OPENSTRAT_SKIP_EXTERNAL_CLI_CHECKS: "1"
+      }
+    });
+    const json = parseCliJson(doctor.stdout);
+
+    expect(doctor.exitCode).toBe(0);
+    expect(doctor.stderr).toEqual([]);
+    expect(json.command).toBe("doctor");
+    expect(json.result).toMatchObject({
+      status: "completed",
+      side_effect: "none",
+      data: {
+        command: "doctor"
+      }
+    });
+    expect(json.result.data?.output_lines?.join("\n")).toContain("OpenStrat");
+  });
+
+  it("emits a blocked machine-readable envelope for CLI contract errors", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const unknown = await runOpenStratCli({
+      argv: ["not-a-command", "--json"],
+      cwd,
+      env: { HOME: userHome }
+    });
+    const json = parseCliJson(unknown.stdout);
+
+    expect(unknown.exitCode).toBe(1);
+    expect(unknown.stderr).toEqual([]);
+    expect(json).toMatchObject({
+      command: "not-a-command",
+      result: {
+        status: "blocked",
+        reason: "Unknown command: not-a-command",
+        side_effect: "none"
+      }
+    });
+  });
+
+  it("emits a failed machine-readable envelope for runtime failures", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const snapshot = await runOpenStratCli({
+      argv: ["market", "snapshot", "BTC-PERP", "--json"],
+      cwd,
+      env: { HOME: userHome }
+    });
+    const json = parseCliJson(snapshot.stdout);
+
+    expect(snapshot.exitCode).toBe(1);
+    expect(snapshot.stderr).toEqual([]);
+    expect(json).toMatchObject({
+      command: "market",
+      result: {
+        status: "failed",
+        error: "Market dataset not found: BTC-PERP",
+        side_effect: "none"
+      }
+    });
   });
 });
