@@ -231,7 +231,8 @@ describe("Hyperliquid registry and historical ingest", () => {
       interval: "15m",
       start_time_ms: 1681923600000,
       end_time_ms: 1681927200000,
-      received_at: receivedAt
+      received_at: receivedAt,
+      acquisition_method: "guarded_live"
     });
 
     expect(result.registry_ref).toBe(
@@ -259,6 +260,10 @@ describe("Hyperliquid registry and historical ingest", () => {
       public_ledger: true,
       replayable: true
     });
+    expect(result.dataset_manifest.acquisition).toMatchObject({
+      method: "guarded_live",
+      deterministic: false
+    });
     expect(store.getJson(result.candle_refs[0])).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -278,7 +283,7 @@ describe("Hyperliquid registry and historical ingest", () => {
       expect.objectContaining({
         dataset_ref: result.dataset_ref,
         canonical_symbol: "BTC-PERP",
-        acquisition_method: "fixture"
+        acquisition_method: "guarded_live"
       })
     ]);
     expect(

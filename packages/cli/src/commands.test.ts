@@ -354,6 +354,76 @@ describe("openstrat CLI commands", () => {
     });
   });
 
+  it("runs guarded live market ingestion for HYPE-PERP behind an explicit confirmation", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome, OPENSTRAT_FAKE_HYPERLIQUID: "1" };
+
+    const ingest = await runOpenStratCli({
+      argv: [
+        "market",
+        "ingest-live",
+        "--symbol",
+        "HYPE-PERP",
+        "--interval",
+        "15m",
+        "--start-time-ms",
+        "1681923600000",
+        "--end-time-ms",
+        "1681927200000",
+        "--received-at",
+        "2026-06-04T00:15:00.000Z",
+        "--confirm-live",
+        "--json"
+      ],
+      cwd,
+      env
+    });
+    const json = parseCliJson(ingest.stdout);
+
+    expect(ingest.exitCode).toBe(0);
+    expect(json.result.data?.output_lines).toBeUndefined();
+    expect(json.result.data).toMatchObject({
+      command: "market",
+      subcommand: "ingest-live",
+      dataset_ref: "datasets/hyperliquid/HYPE-PERP/2026-06-04T00-15-00.000Z.json",
+      dataset_manifest: {
+        canonical_symbol: "HYPE-PERP",
+        acquisition: {
+          method: "guarded_live",
+          deterministic: false
+        }
+      },
+      validation: {
+        valid: true,
+        missing_requirements: []
+      }
+    });
+
+    const snapshot = await runOpenStratCli({
+      argv: ["market", "snapshot", "HYPE-PERP", "--json"],
+      cwd,
+      env
+    });
+    const snapshotJson = parseCliJson(snapshot.stdout);
+
+    expect(snapshot.exitCode).toBe(0);
+    expect(snapshotJson.result.data).toMatchObject({
+      command: "market",
+      subcommand: "snapshot",
+      dataset_ref: json.result.data?.dataset_ref,
+      market: {
+        canonical_symbol: "HYPE-PERP",
+        display_symbol: "HYPE"
+      },
+      source_provenance: {
+        source_kind: "public_ledger",
+        public_ledger: true,
+        replayable: true
+      }
+    });
+  });
+
   it("validates pure strategies, rejects impure strategies, and captures proposals", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));

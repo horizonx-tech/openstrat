@@ -45,6 +45,15 @@ Hyperliquid is represented as a read-only venue capability with public-ledger, r
 
 Tests use fixtures only. Live network access remains opt-in and should follow the same manifest/index path before becoming usable by strategies or backtests.
 
+A local guarded live smoke can be run against the HYPE perpetual market:
+
+```bash
+openstrat market ingest-live --symbol HYPE-PERP --interval 15m --lookback-minutes 60 --confirm-live --json
+openstrat market snapshot HYPE-PERP --json
+```
+
+The command is read-only and writes local runtime artifacts under the active OpenStrat home. It should not become a CI requirement.
+
 ## Public Ledger Implications
 
 Hyperliquid being public-ledger and replayable changes what OpenStrat can verify:

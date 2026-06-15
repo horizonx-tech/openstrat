@@ -28,6 +28,7 @@ import {
   AgentResultEnvelopeSchema,
   BacktestReportSchema,
   BotRunManifestSchema,
+  CandleIntervalSchema,
   DecisionLedgerEntrySchema,
   DeploymentGateSchema,
   MarketDatasetManifestSchema,
@@ -42,6 +43,7 @@ import {
   getMarketDatasetManifest,
   HyperliquidInfoClient,
   ingestHyperliquidWindow,
+  validateMarketDataset,
   type HyperliquidReadClient
 } from "@openstrat/market-data";
 import { FileObjectStore, SqliteEventLog } from "@openstrat/persistence";
@@ -197,7 +199,7 @@ export async function runOpenStratCli(
         await commandArtifacts({ emitOut, home });
         break;
       case "market":
-        await commandMarket({ argv, emitOut, home, setJsonData });
+        await commandMarket({ argv, emitOut, env, home, setJsonData });
         break;
       case "strategy":
         await commandStrategy({ argv, emitOut, home });
@@ -999,6 +1001,7 @@ function commandStrategyProposeSample(options: {
 async function commandMarket(options: {
   argv: string[];
   emitOut: (line: string) => void;
+  env: Record<string, string | undefined>;
   home: OpenStratHome;
   setJsonData: SetCliJsonData;
 }): Promise<void> {
@@ -1006,6 +1009,9 @@ async function commandMarket(options: {
   switch (subcommand) {
     case "ingest-fixture":
       await commandMarketIngestFixture(options);
+      return;
+    case "ingest-live":
+      await commandMarketIngestLive(options);
       return;
     case "list":
       commandMarketList(options);
@@ -1015,7 +1021,7 @@ async function commandMarket(options: {
       return;
     default:
       throw new Error(
-        "Usage: openstrat market <ingest-fixture|list|snapshot> [options]"
+        "Usage: openstrat market <ingest-fixture|ingest-live|list|snapshot> [options]"
       );
   }
 }
@@ -1060,6 +1066,84 @@ async function commandMarketIngestFixture(options: {
   options.emitOut(`registry: ${result.registry_ref}`);
   options.emitOut(`latest_price: ${result.latest_price_ref}`);
   options.emitOut(`raw: ${result.raw_refs.meta_and_asset_ctxs}`);
+}
+
+async function commandMarketIngestLive(options: {
+  argv: string[];
+  emitOut: (line: string) => void;
+  env: Record<string, string | undefined>;
+  home: OpenStratHome;
+  setJsonData: SetCliJsonData;
+}): Promise<void> {
+  ensureOpenStratHome(options.home);
+  if (!options.argv.includes("--confirm-live")) {
+    throw new Error(
+      "Live market ingest requires --confirm-live because it reads the live Hyperliquid API"
+    );
+  }
+
+  const symbol = requiredFlag(options.argv, "--symbol").toUpperCase();
+  const coin = hyperliquidCoinFromSymbol(symbol);
+  const interval = CandleIntervalSchema.parse(
+    stringFlag(options.argv, "--interval") ?? "15m"
+  );
+  const endTimeMs = optionalNumberFlag(options.argv, "--end-time-ms") ?? Date.now();
+  const lookbackMinutes = optionalNumberFlag(options.argv, "--lookback-minutes") ?? 60;
+  const startTimeMs =
+    optionalNumberFlag(options.argv, "--start-time-ms") ??
+    endTimeMs - lookbackMinutes * 60_000;
+  if (startTimeMs >= endTimeMs) {
+    throw new Error("--start-time-ms must be before --end-time-ms");
+  }
+
+  const receivedAt =
+    stringFlag(options.argv, "--received-at") ?? new Date().toISOString();
+  const store = new FileObjectStore(options.home.objectsDir);
+  const client =
+    options.env.OPENSTRAT_FAKE_HYPERLIQUID === "1"
+      ? createFixtureHyperliquidClient(coin)
+      : new HyperliquidInfoClient();
+  const result = await ingestHyperliquidWindow({
+    client,
+    object_store: store,
+    coin,
+    interval,
+    start_time_ms: startTimeMs,
+    end_time_ms: endTimeMs,
+    received_at: receivedAt,
+    acquisition_method: "guarded_live"
+  });
+  const validation = validateMarketDataset(store, result.dataset_ref, {
+    as_of: receivedAt,
+    canonical_symbol: `${coin}-PERP`,
+    source: "hyperliquid",
+    venue: "hyperliquid",
+    required_families: [
+      "market_registry",
+      "mark_prices",
+      "candles",
+      "funding_rates",
+      "orderbook_snapshots"
+    ]
+  });
+
+  options.setJsonData({
+    command: "market",
+    subcommand: "ingest-live",
+    dataset_ref: result.dataset_ref,
+    dataset_manifest: result.dataset_manifest,
+    dataset_index_entry: result.dataset_index_entry,
+    registry_ref: result.registry_ref,
+    latest_price_ref: result.latest_price_ref,
+    price_refs: result.price_refs,
+    raw_refs: result.raw_refs,
+    validation
+  });
+
+  options.emitOut(`dataset: ${result.dataset_ref}`);
+  options.emitOut(`registry: ${result.registry_ref}`);
+  options.emitOut(`latest_price: ${result.latest_price_ref}`);
+  options.emitOut(`validation: ${validation.valid ? "valid" : "invalid"}`);
 }
 
 function commandMarketList(options: {
@@ -1635,6 +1719,29 @@ function numberFlag(argv: readonly string[], flag: string): number {
   return parsed;
 }
 
+function optionalNumberFlag(argv: readonly string[], flag: string): number | undefined {
+  const value = stringFlag(argv, flag);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid number for ${flag}: ${value}`);
+  }
+  return parsed;
+}
+
+function hyperliquidCoinFromSymbol(symbol: string): string {
+  const trimmed = symbol.trim().toUpperCase();
+  if (trimmed.endsWith("-PERP")) {
+    return trimmed.slice(0, -"PERP".length - 1);
+  }
+  if (trimmed.includes("/")) {
+    throw new Error(`Hyperliquid live ingest expects a perp symbol, got ${symbol}`);
+  }
+  return trimmed;
+}
+
 function readDeploymentGateRef(
   store: FileObjectStore,
   ref: string
@@ -1916,14 +2023,19 @@ function listObjectRefs(home: OpenStratHome, prefix: string): string[] {
   return refs.sort();
 }
 
-function createFixtureHyperliquidClient(): HyperliquidReadClient {
+function createFixtureHyperliquidClient(symbol = "BTC"): HyperliquidReadClient {
+  const price = symbol === "HYPE" ? "35.25" : "113377.0";
+  const midPrice = symbol === "HYPE" ? "35.26" : "113387.0";
+  const oraclePrice = symbol === "HYPE" ? "35.20" : "113370.0";
+  const bidPrice = symbol === "HYPE" ? "35.24" : "113377.0";
+  const askPrice = symbol === "HYPE" ? "35.27" : "113397.0";
   return {
     async metaAndAssetCtxs() {
       return [
         {
           universe: [
             {
-              name: "BTC",
+              name: symbol,
               szDecimals: 5,
               maxLeverage: 50,
               marginTableId: 50
@@ -1942,15 +2054,15 @@ function createFixtureHyperliquidClient(): HyperliquidReadClient {
         },
         [
           {
-            prevDayPx: "110000.0",
+            prevDayPx: price,
             dayNtlVlm: "1500000000.0",
-            markPx: "113377.0",
-            midPx: "113387.0",
+            markPx: price,
+            midPx: midPrice,
             funding: "0.0000125",
             openInterest: "10000.0",
             premium: "0.0001",
-            oraclePx: "113370.0",
-            impactPxs: ["113376.0", "113397.0"],
+            oraclePx: oraclePrice,
+            impactPxs: [bidPrice, askPrice],
             dayBaseVlm: "12000.0"
           }
         ]
@@ -1966,7 +2078,7 @@ function createFixtureHyperliquidClient(): HyperliquidReadClient {
           l: "29250.0",
           n: 189,
           o: "29295.0",
-          s: "BTC",
+          s: symbol,
           t: 1681923600000,
           v: "0.98639"
         },
@@ -1978,7 +2090,7 @@ function createFixtureHyperliquidClient(): HyperliquidReadClient {
           l: "29240.0",
           n: 101,
           o: "29258.0",
-          s: "BTC",
+          s: symbol,
           t: 1681924500000,
           v: "0.456"
         }
@@ -1987,13 +2099,13 @@ function createFixtureHyperliquidClient(): HyperliquidReadClient {
     async fundingHistory() {
       return [
         {
-          coin: "BTC",
+          coin: symbol,
           fundingRate: "0.0000125",
           premium: "0.0001",
           time: 1681923600000
         },
         {
-          coin: "BTC",
+          coin: symbol,
           fundingRate: "-0.000003",
           premium: "-0.00002",
           time: 1681927200000
@@ -2002,16 +2114,16 @@ function createFixtureHyperliquidClient(): HyperliquidReadClient {
     },
     async l2Book() {
       return {
-        coin: "BTC",
+        coin: symbol,
         time: 1754450974231,
         levels: [
           [
-            { px: "113377.0", sz: "7.6699", n: 17 },
-            { px: "113376.0", sz: "4.13714", n: 8 }
+            { px: bidPrice, sz: "7.6699", n: 17 },
+            { px: symbol === "HYPE" ? "35.23" : "113376.0", sz: "4.13714", n: 8 }
           ],
           [
-            { px: "113397.0", sz: "0.11543", n: 3 },
-            { px: "113398.0", sz: "1.2", n: 4 }
+            { px: askPrice, sz: "0.11543", n: 3 },
+            { px: symbol === "HYPE" ? "35.28" : "113398.0", sz: "1.2", n: 4 }
           ]
         ]
       };

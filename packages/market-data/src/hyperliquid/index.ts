@@ -6,6 +6,7 @@ import type {
   MarketDatasetIndexEntry,
   MarketDatasetManifest,
   MarketDatum,
+  MarketDataAcquisitionMethod,
   MarketRegistryEntry,
   MarketVenueCapability,
   OrderbookSnapshot
@@ -532,6 +533,7 @@ export interface HyperliquidIngestRequest {
   start_time_ms: number;
   end_time_ms: number;
   received_at?: string;
+  acquisition_method?: MarketDataAcquisitionMethod;
 }
 
 export interface HyperliquidIngestResult {
@@ -556,6 +558,7 @@ export async function ingestHyperliquidWindow(
   request: HyperliquidIngestRequest
 ): Promise<HyperliquidIngestResult> {
   const receivedAt = request.received_at ?? new Date().toISOString();
+  const acquisitionMethod = request.acquisition_method ?? "fixture";
   const timestampSlug = slugTimestamp(receivedAt);
   const rangeSlug = `${request.start_time_ms}-${request.end_time_ms}`;
   const canonical = canonicalSymbol(request.coin);
@@ -672,11 +675,11 @@ export async function ingestHyperliquidWindow(
       end_at: new Date(request.end_time_ms).toISOString()
     },
     acquisition: {
-      method: "fixture",
+      method: acquisitionMethod,
       requested_at: receivedAt,
       completed_at: receivedAt,
       actor: "hyperliquid-adapter",
-      deterministic: true
+      deterministic: acquisitionMethod === "fixture"
     },
     source_provenance: {
       source_kind: "public_ledger",

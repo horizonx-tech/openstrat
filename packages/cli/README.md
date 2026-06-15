@@ -45,6 +45,17 @@ emits one JSON line with an `AgentResultEnvelope`:
 - `blocked` for CLI contract failures such as usage errors or unknown commands
 - `failed` for runtime or project-state failures
 
+Guarded live market-data smoke:
+
+```bash
+openstrat market ingest-live --symbol HYPE-PERP --interval 15m --lookback-minutes 60 --confirm-live --json
+openstrat market snapshot HYPE-PERP --json
+```
+
+`ingest-live` is read-only, opt-in, and guarded by `--confirm-live`. It writes
+local runtime artifacts under the active OpenStrat home; it is not required for
+the fixture-backed test suite.
+
 ## Agent Runtime
 
 `openstrat chat` defaults to the Codex app-server runtime:
