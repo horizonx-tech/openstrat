@@ -2,7 +2,11 @@ import type {
   Candle,
   CandleInterval,
   MarketDatum,
+  MarketFreshnessPolicy,
+  MarketRawPayloadRef,
   MarketRegistryEntry,
+  MarketSourceProvenance,
+  NormalizedMarketDataRef,
   OrderbookSnapshot
 } from "@openstrat/domain";
 
@@ -24,9 +28,22 @@ export interface OrderbookQuery extends MarketDataQuery {
   depth: number;
 }
 
+export interface MarketDataSnapshotContext {
+  dataset_ref?: string;
+  registry_ref?: string;
+  latest_price_ref?: string;
+  raw_refs?: readonly MarketRawPayloadRef[];
+  normalized_refs?: readonly NormalizedMarketDataRef[];
+  freshness?: MarketFreshnessPolicy;
+  source_provenance?: MarketSourceProvenance;
+}
+
 export interface MarketDataReader {
   getMarket(canonicalSymbol: string): Promise<MarketRegistryEntry | undefined>;
   getLatestPrice(query: MarketDataQuery): Promise<MarketDatum>;
+  getLatestDataset?(
+    query: MarketDataQuery
+  ): Promise<MarketDataSnapshotContext | undefined>;
   getCandles(query: CandleQuery): Promise<Candle[]>;
   getOrderbookSnapshot(query: OrderbookQuery): Promise<OrderbookSnapshot>;
 }

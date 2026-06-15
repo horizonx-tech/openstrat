@@ -22,7 +22,8 @@ import {
   AGENT_TOOL_GATEWAY_TOOLS,
   agentToolGatewayToolDefinition,
   isAgentToolGatewayToolName,
-  type AgentToolGatewayToolName
+  type AgentToolGatewayToolName,
+  type ReadMarketDataSnapshotToolOutput
 } from "./agent-tool-registry.js";
 
 export { AGENT_TOOL_GATEWAY_TOOLS } from "./agent-tool-registry.js";
@@ -84,10 +85,9 @@ export interface InvokeAgentToolInput extends AgentToolInvocationBase {
 
 export interface AgentToolGateway {
   readonly tool_names: readonly AgentToolGatewayToolName[];
-  readMarketDataSnapshot(input: ReadMarketDataSnapshotInput): Promise<{
-    market: NonNullable<Awaited<ReturnType<MarketDataReader["getMarket"]>>>;
-    latest_price: Awaited<ReturnType<MarketDataReader["getLatestPrice"]>>;
-  }>;
+  readMarketDataSnapshot(
+    input: ReadMarketDataSnapshotInput
+  ): Promise<ReadMarketDataSnapshotToolOutput>;
   captureBacktestRequest(input: CaptureBacktestRequestInput): Promise<BacktestRequest>;
   validateRisk(input: ValidateRiskInput): Promise<RiskReview>;
   captureStrategyPatchProposal(
@@ -122,12 +122,26 @@ export function createAgentToolGateway(
         ...(input.source ? { source: input.source } : {}),
         ...(input.venue ? { venue: input.venue } : {})
       });
+      const datasetContext = await dependencies.marketData.getLatestDataset?.({
+        canonical_symbol: input.canonical_symbol,
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.venue ? { venue: input.venue } : {})
+      });
+      const output = agentToolGatewayToolDefinition(
+        "market_data.read_snapshot"
+      ).output_schema.parse({
+        market,
+        latest_price: latestPrice,
+        ...datasetContext,
+        latest_price_ref: datasetContext?.latest_price_ref ?? latestPrice.raw_ref
+      });
 
       recordToolCompleted(dependencies, now(), input, "market_data.read_snapshot", {
         side_effect: sideEffectFor("market_data.read_snapshot"),
-        result_ref: latestPrice.raw_ref ?? market.source_refs[0]
+        result_ref:
+          output.dataset_ref ?? output.latest_price_ref ?? market.source_refs[0]
       });
-      return { market, latest_price: latestPrice };
+      return output;
     },
 
     async captureBacktestRequest(input) {

@@ -3,9 +3,13 @@ import {
   BacktestRequestSchema,
   CanonicalSymbolSchema,
   DeploymentGateSchema,
+  MarketFreshnessPolicySchema,
+  MarketRawPayloadRefSchema,
   MarketDatumSchema,
   MarketRegistryEntrySchema,
+  MarketSourceProvenanceSchema,
   MemoryProposalSchema,
+  NormalizedMarketDataRefSchema,
   NonEmptyStringSchema,
   RiskPolicySchema,
   RiskReviewSchema,
@@ -18,9 +22,13 @@ import {
   type AgentToolSideEffect,
   type BacktestRequest,
   type DeploymentGate,
+  type MarketFreshnessPolicy,
+  type MarketRawPayloadRef,
   type MarketDatum,
   type MarketRegistryEntry,
+  type MarketSourceProvenance,
   type MemoryProposal,
+  type NormalizedMarketDataRef,
   type RiskPolicy,
   type RiskReview,
   type StrategyPatchProposal,
@@ -69,6 +77,13 @@ export interface ReadMarketDataSnapshotToolInput {
 export interface ReadMarketDataSnapshotToolOutput {
   market: MarketRegistryEntry;
   latest_price: MarketDatum;
+  dataset_ref?: string;
+  registry_ref?: string;
+  latest_price_ref?: string;
+  raw_refs?: readonly MarketRawPayloadRef[];
+  normalized_refs?: readonly NormalizedMarketDataRef[];
+  freshness?: MarketFreshnessPolicy;
+  source_provenance?: MarketSourceProvenance;
 }
 
 export interface BacktestRequestToolInput {
@@ -122,9 +137,29 @@ const readMarketDataSnapshotInputSchema =
 const readMarketDataSnapshotOutputSchema =
   schemaFromParser<ReadMarketDataSnapshotToolOutput>((input) => {
     const object = record(input);
+    const datasetRef = optionalSourceRef(object.dataset_ref);
+    const registryRef = optionalSourceRef(object.registry_ref);
+    const latestPriceRef = optionalSourceRef(object.latest_price_ref);
+    const rawRefs = optionalRawPayloadRefs(object.raw_refs);
+    const normalizedRefs = optionalNormalizedRefs(object.normalized_refs);
+    const freshness =
+      object.freshness === undefined
+        ? undefined
+        : MarketFreshnessPolicySchema.parse(object.freshness);
+    const sourceProvenance =
+      object.source_provenance === undefined
+        ? undefined
+        : MarketSourceProvenanceSchema.parse(object.source_provenance);
     return {
       market: MarketRegistryEntrySchema.parse(object.market),
-      latest_price: MarketDatumSchema.parse(object.latest_price)
+      latest_price: MarketDatumSchema.parse(object.latest_price),
+      ...(datasetRef ? { dataset_ref: datasetRef } : {}),
+      ...(registryRef ? { registry_ref: registryRef } : {}),
+      ...(latestPriceRef ? { latest_price_ref: latestPriceRef } : {}),
+      ...(rawRefs ? { raw_refs: rawRefs } : {}),
+      ...(normalizedRefs ? { normalized_refs: normalizedRefs } : {}),
+      ...(freshness ? { freshness } : {}),
+      ...(sourceProvenance ? { source_provenance: sourceProvenance } : {})
     };
   });
 
@@ -362,6 +397,26 @@ function parseSourceRefArray(value: unknown, field: string): string[] {
     throw new Error(`${field} must be an array`);
   }
   return value.map((item) => SourceRefSchema.parse(item));
+}
+
+function optionalRawPayloadRefs(value: unknown): MarketRawPayloadRef[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("raw_refs must be an array");
+  }
+  return value.map((item) => MarketRawPayloadRefSchema.parse(item));
+}
+
+function optionalNormalizedRefs(value: unknown): NormalizedMarketDataRef[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("normalized_refs must be an array");
+  }
+  return value.map((item) => NormalizedMarketDataRefSchema.parse(item));
 }
 
 function parseNonEmptyStringArray(value: unknown, field: string): string[] {

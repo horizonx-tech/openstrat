@@ -19,7 +19,7 @@ interface CliJsonEnvelope {
     status: string;
     reason?: string;
     error?: string;
-    data?: {
+    data?: Record<string, unknown> & {
       command?: string;
       output_lines?: string[];
     };
@@ -221,8 +221,7 @@ describe("openstrat CLI commands", () => {
     ) as {
       canonical_symbol: string;
       dataset_ref: string;
-      latest_price_ref: string;
-      raw_refs: Record<string, string>;
+      raw_refs: { kind: string; ref: string }[];
       source: string;
       venue: string;
     };
@@ -232,7 +231,10 @@ describe("openstrat CLI commands", () => {
       source: "hyperliquid",
       venue: "hyperliquid"
     });
-    expect(dataset.raw_refs.meta_and_asset_ctxs).toContain("raw/hyperliquid");
+    const metaRawRef = dataset.raw_refs.find(
+      (rawRef) => rawRef.kind === "meta_and_asset_contexts"
+    )?.ref;
+    expect(metaRawRef).toContain("raw/hyperliquid");
 
     const list = await runOpenStratCli({ argv: ["market", "list"], cwd, env });
     expect(list.exitCode).toBe(0);
@@ -257,9 +259,98 @@ describe("openstrat CLI commands", () => {
       venue: "hyperliquid"
     });
     expect(parsed.latest_price).toMatchObject({
-      raw_ref: dataset.raw_refs.meta_and_asset_ctxs,
+      raw_ref: metaRawRef,
       stale_after_ms: 5000,
       venue: "hyperliquid"
+    });
+  });
+
+  it("emits typed market data payloads in json mode", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = { HOME: userHome };
+
+    const ingest = await runOpenStratCli({
+      argv: [
+        "market",
+        "ingest-fixture",
+        "--symbol",
+        "BTC",
+        "--interval",
+        "15m",
+        "--json"
+      ],
+      cwd,
+      env
+    });
+    const ingestJson = parseCliJson(ingest.stdout);
+
+    expect(ingest.exitCode).toBe(0);
+    expect(ingestJson.result.data?.output_lines).toBeUndefined();
+    expect(ingestJson.result.data).toMatchObject({
+      command: "market",
+      subcommand: "ingest-fixture",
+      dataset_ref: "datasets/hyperliquid/BTC-PERP/2026-06-04T00-00-00.000Z.json",
+      latest_price_ref:
+        "normalized/hyperliquid/mark-prices/BTC-PERP/2026-06-04T00-00-00.000Z.json",
+      dataset_manifest: {
+        canonical_symbol: "BTC-PERP",
+        source_provenance: {
+          source_kind: "public_ledger",
+          public_ledger: true,
+          replayable: true
+        }
+      }
+    });
+
+    const list = await runOpenStratCli({
+      argv: ["market", "list", "--json"],
+      cwd,
+      env
+    });
+    const listJson = parseCliJson(list.stdout);
+
+    expect(list.exitCode).toBe(0);
+    expect(listJson.result.data?.output_lines).toBeUndefined();
+    expect(listJson.result.data).toMatchObject({
+      command: "market",
+      subcommand: "list",
+      datasets: [
+        expect.objectContaining({
+          canonical_symbol: "BTC-PERP",
+          source: "hyperliquid",
+          venue: "hyperliquid",
+          source_provenance: expect.objectContaining({
+            source_kind: "public_ledger"
+          })
+        })
+      ]
+    });
+
+    const snapshot = await runOpenStratCli({
+      argv: ["market", "snapshot", "BTC-PERP", "--json"],
+      cwd,
+      env
+    });
+    const snapshotJson = parseCliJson(snapshot.stdout);
+
+    expect(snapshot.exitCode).toBe(0);
+    expect(snapshotJson.result.data?.output_lines).toBeUndefined();
+    expect(snapshotJson.result.data).toMatchObject({
+      command: "market",
+      subcommand: "snapshot",
+      dataset_ref: ingestJson.result.data?.dataset_ref,
+      registry_ref: "normalized/hyperliquid/registry/2026-06-04T00-00-00.000Z.json",
+      latest_price_ref:
+        "normalized/hyperliquid/mark-prices/BTC-PERP/2026-06-04T00-00-00.000Z.json",
+      freshness: {
+        stale_after_ms: 5000
+      },
+      source_provenance: {
+        source_kind: "public_ledger",
+        public_ledger: true,
+        replayable: true
+      }
     });
   });
 

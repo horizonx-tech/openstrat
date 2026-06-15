@@ -7,7 +7,10 @@ import type {
   RiskReview,
   TradeIntent
 } from "@openstrat/domain";
-import type { MarketDataReader } from "@openstrat/market-data";
+import type {
+  MarketDataReader,
+  MarketDataSnapshotContext
+} from "@openstrat/market-data";
 import { SqliteEventLog, type ObjectStore } from "@openstrat/persistence";
 import type { RiskContext, RiskPolicyEngine } from "@openstrat/risk";
 import {
@@ -89,6 +92,14 @@ describe("agent tool gateway", () => {
 
     expect(result.market.canonical_symbol).toBe("ETH-PERP");
     expect(result.latest_price.value).toBe(3500);
+    expect(result.dataset_ref).toBe(
+      "datasets/hyperliquid/ETH-PERP/2026-06-05T00-00-00.000Z.json"
+    );
+    expect(result.source_provenance).toMatchObject({
+      source_kind: "public_ledger",
+      public_ledger: true,
+      replayable: true
+    });
     expect(events.list("agent_sessions/agent_session_001")).toMatchObject([
       {
         type: "agent.tool_call.completed",
@@ -96,7 +107,7 @@ describe("agent tool gateway", () => {
           tool_name: "market_data.read_snapshot",
           result: {
             status: "completed",
-            result_ref: "market-data/hyperliquid/eth/latest.json",
+            result_ref: "datasets/hyperliquid/ETH-PERP/2026-06-05T00-00-00.000Z.json",
             side_effect: "none"
           },
           side_effect: "none"
@@ -124,7 +135,8 @@ describe("agent tool gateway", () => {
       },
       latest_price: {
         value: 3500
-      }
+      },
+      dataset_ref: "datasets/hyperliquid/ETH-PERP/2026-06-05T00-00-00.000Z.json"
     });
     expect(events.list("agent_sessions/agent_session_001").at(-1)).toMatchObject({
       type: "agent.tool_call.completed",
@@ -133,7 +145,7 @@ describe("agent tool gateway", () => {
         tool_name: "market_data.read_snapshot",
         result: {
           status: "completed",
-          result_ref: "market-data/hyperliquid/eth/latest.json",
+          result_ref: "datasets/hyperliquid/ETH-PERP/2026-06-05T00-00-00.000Z.json",
           side_effect: "none"
         },
         side_effect: "none"
@@ -324,6 +336,50 @@ class StubMarketDataReader implements MarketDataReader {
       stale_after_ms: 5000,
       confidence: 0.99,
       raw_ref: "market-data/hyperliquid/eth/latest.json"
+    };
+  }
+
+  async getLatestDataset(): Promise<MarketDataSnapshotContext> {
+    return {
+      dataset_ref: "datasets/hyperliquid/ETH-PERP/2026-06-05T00-00-00.000Z.json",
+      registry_ref: "normalized/hyperliquid/registry/2026-06-05T00-00-00.000Z.json",
+      latest_price_ref:
+        "normalized/hyperliquid/mark-prices/ETH-PERP/2026-06-05T00-00-00.000Z.json",
+      raw_refs: [
+        {
+          ref: "raw/hyperliquid/meta-and-asset-ctxs/2026-06-05T00-00-00.000Z.json",
+          kind: "meta_and_asset_contexts",
+          source: "hyperliquid",
+          venue: "hyperliquid",
+          captured_at: now,
+          request: { type: "metaAndAssetCtxs" },
+          immutable: true
+        }
+      ],
+      normalized_refs: [
+        {
+          ref: "normalized/hyperliquid/mark-prices/ETH-PERP/2026-06-05T00-00-00.000Z.json",
+          family: "mark_prices",
+          canonical_symbol: "ETH-PERP",
+          source: "hyperliquid",
+          venue: "hyperliquid",
+          created_at: now,
+          raw_refs: [
+            "raw/hyperliquid/meta-and-asset-ctxs/2026-06-05T00-00-00.000Z.json"
+          ],
+          immutable: true
+        }
+      ],
+      freshness: {
+        as_of: now,
+        stale_after_ms: 5000
+      },
+      source_provenance: {
+        source_kind: "public_ledger",
+        public_ledger: true,
+        replayable: true,
+        verification_refs: ["https://hyperliquid.gitbook.io/hyperliquid-docs/"]
+      }
     };
   }
 

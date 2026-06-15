@@ -30,15 +30,18 @@ import {
   BotRunManifestSchema,
   DecisionLedgerEntrySchema,
   DeploymentGateSchema,
+  MarketDatasetManifestSchema,
   MemoryProposalSchema,
   type AgentResultEnvelope,
   type BotRunManifest,
-  type DeploymentGate
+  type DeploymentGate,
+  type MarketDatasetManifest,
+  type NormalizedMarketDataRef
 } from "@openstrat/domain";
 import {
+  getMarketDatasetManifest,
   HyperliquidInfoClient,
   ingestHyperliquidWindow,
-  normalizeHyperliquidMetaAndAssetCtxs,
   type HyperliquidReadClient
 } from "@openstrat/market-data";
 import { FileObjectStore, SqliteEventLog } from "@openstrat/persistence";
@@ -94,28 +97,6 @@ export const strategy = defineStrategy(
 );
 `;
 
-interface MarketDatasetManifest {
-  dataset_ref: string;
-  canonical_symbol: string;
-  source: string;
-  venue: string;
-  received_at: string;
-  registry_ref: string;
-  latest_price_ref: string;
-  candle_refs: string[];
-  funding_refs: string[];
-  orderbook_refs: string[];
-  raw_refs: {
-    meta_and_asset_ctxs: string;
-    candles: string;
-    funding: string;
-    l2_book: string;
-  };
-  freshness: {
-    latest_price_stale_after_ms?: number;
-  };
-}
-
 interface DeploymentGateArtifact {
   artifact_ref: string;
   created_at: string;
@@ -127,6 +108,8 @@ interface DeploymentGateArtifact {
 }
 
 type ChatRuntimeKind = "codex_app_server" | "pi";
+type CliJsonData = Record<string, unknown>;
+type SetCliJsonData = (data: CliJsonData) => void;
 
 export interface RunOpenStratCliInput {
   argv: string[];
@@ -150,6 +133,10 @@ export async function runOpenStratCli(
   const argv = [...inputOptions.argv];
   const jsonMode = removeBooleanFlag(argv, "--json");
   const commandName = commandNameForJson(argv);
+  let jsonData: CliJsonData | undefined;
+  const setJsonData: SetCliJsonData = (data) => {
+    jsonData = data;
+  };
   const emitOut = (line: string) => {
     stdoutLines.push(line);
     if (!jsonMode) {
@@ -173,6 +160,7 @@ export async function runOpenStratCli(
       printHelp(emitOut);
       return finishCliSuccess({
         commandName,
+        data: jsonData,
         emitJsonOut,
         jsonMode,
         stderrLines,
@@ -183,6 +171,7 @@ export async function runOpenStratCli(
       emitOut(cliVersion);
       return finishCliSuccess({
         commandName,
+        data: jsonData,
         emitJsonOut,
         jsonMode,
         stderrLines,
@@ -208,7 +197,7 @@ export async function runOpenStratCli(
         await commandArtifacts({ emitOut, home });
         break;
       case "market":
-        await commandMarket({ argv, emitOut, home });
+        await commandMarket({ argv, emitOut, home, setJsonData });
         break;
       case "strategy":
         await commandStrategy({ argv, emitOut, home });
@@ -254,6 +243,7 @@ export async function runOpenStratCli(
     }
     return finishCliSuccess({
       commandName,
+      data: jsonData,
       emitJsonOut,
       jsonMode,
       stderrLines,
@@ -277,6 +267,7 @@ export async function runOpenStratCli(
 
 function finishCliSuccess(options: {
   commandName: string;
+  data: CliJsonData | undefined;
   emitJsonOut: (line: string) => void;
   jsonMode: boolean;
   stderrLines: string[];
@@ -293,12 +284,13 @@ function finishCliSuccess(options: {
   const outputLines = [...options.stdoutLines];
   options.stdoutLines.length = 0;
   options.stderrLines.length = 0;
+  const data = options.data ?? {
+    command: options.commandName,
+    output_lines: outputLines
+  };
   const result = AgentResultEnvelopeSchema.parse({
     status: "completed",
-    data: {
-      command: options.commandName,
-      output_lines: outputLines
-    },
+    data: "command" in data ? data : { command: options.commandName, ...data },
     side_effect: "none"
   });
   options.emitJsonOut(cliJsonEnvelope(options.commandName, result));
@@ -436,15 +428,15 @@ async function commandBacktestRunSample(options: {
   const feeBps = numberFlag(options.argv, "--fee-bps");
   const slippageBps = numberFlag(options.argv, "--slippage-bps");
   const store = new FileObjectStore(options.home.objectsDir);
-  const dataset = store.getJson<MarketDatasetManifest>(datasetRef);
+  const dataset = getMarketDatasetManifest(store, datasetRef);
   const runId = `sample_backtest_${Date.now()}`;
   const report = await runCandleBacktest({
     run_id: runId,
     strategy: movingAverageBreakoutStrategy,
     object_store: store,
     dataset_ref: dataset.dataset_ref,
-    candle_refs: dataset.candle_refs,
-    raw_artifact_refs: Object.values(dataset.raw_refs),
+    candle_refs: normalizedRefsFor(dataset, "candles").map((ref) => ref.ref),
+    raw_artifact_refs: dataset.raw_refs.map((rawRef) => rawRef.ref),
     generated_at: new Date().toISOString(),
     initial_equity_usd: 10_000,
     fee_bps: feeBps,
@@ -1008,6 +1000,7 @@ async function commandMarket(options: {
   argv: string[];
   emitOut: (line: string) => void;
   home: OpenStratHome;
+  setJsonData: SetCliJsonData;
 }): Promise<void> {
   const subcommand = options.argv.shift();
   switch (subcommand) {
@@ -1031,6 +1024,7 @@ async function commandMarketIngestFixture(options: {
   argv: string[];
   emitOut: (line: string) => void;
   home: OpenStratHome;
+  setJsonData: SetCliJsonData;
 }): Promise<void> {
   ensureOpenStratHome(options.home);
   const symbol = stringFlag(options.argv, "--symbol")?.toUpperCase() ?? "BTC";
@@ -1050,70 +1044,46 @@ async function commandMarketIngestFixture(options: {
     end_time_ms: 1681927200000,
     received_at: MARKET_FIXTURE_RECEIVED_AT
   });
-  const normalized = normalizeHyperliquidMetaAndAssetCtxs(
-    store.getJson(result.raw_refs.meta_and_asset_ctxs),
-    {
-      received_at: MARKET_FIXTURE_RECEIVED_AT,
-      raw_ref: result.raw_refs.meta_and_asset_ctxs
-    }
-  );
-  const canonicalSymbol = `${symbol}-PERP`;
-  const market = normalized.registry.find(
-    (entry) => entry.canonical_symbol === canonicalSymbol
-  );
-  const latestPrice = normalized.mark_prices.find(
-    (datum) => datum.canonical_symbol === canonicalSymbol
-  );
-  if (!market || !latestPrice) {
-    throw new Error(`Fixture market not found: ${canonicalSymbol}`);
-  }
+  options.setJsonData({
+    command: "market",
+    subcommand: "ingest-fixture",
+    dataset_ref: result.dataset_ref,
+    dataset_manifest: result.dataset_manifest,
+    dataset_index_entry: result.dataset_index_entry,
+    registry_ref: result.registry_ref,
+    latest_price_ref: result.latest_price_ref,
+    price_refs: result.price_refs,
+    raw_refs: result.raw_refs
+  });
 
-  const timestampSlug = slugTimestamp(MARKET_FIXTURE_RECEIVED_AT);
-  const latestPriceRef = `normalized/hyperliquid/mark-prices/${canonicalSymbol}/${timestampSlug}.json`;
-  const datasetRef = `datasets/hyperliquid/${canonicalSymbol}/${timestampSlug}.json`;
-  store.putJson(latestPriceRef, latestPrice, { overwrite: true });
-  store.putJson(
-    datasetRef,
-    {
-      dataset_ref: datasetRef,
-      canonical_symbol: canonicalSymbol,
-      source: market.source,
-      venue: market.venue,
-      received_at: MARKET_FIXTURE_RECEIVED_AT,
-      registry_ref: result.registry_ref,
-      latest_price_ref: latestPriceRef,
-      candle_refs: result.candle_refs,
-      funding_refs: result.funding_refs,
-      orderbook_refs: result.orderbook_refs,
-      raw_refs: result.raw_refs,
-      freshness: {
-        latest_price_stale_after_ms: latestPrice.stale_after_ms
-      }
-    },
-    { overwrite: true }
-  );
-
-  options.emitOut(`dataset: ${datasetRef}`);
+  options.emitOut(`dataset: ${result.dataset_ref}`);
   options.emitOut(`registry: ${result.registry_ref}`);
-  options.emitOut(`latest_price: ${latestPriceRef}`);
+  options.emitOut(`latest_price: ${result.latest_price_ref}`);
   options.emitOut(`raw: ${result.raw_refs.meta_and_asset_ctxs}`);
 }
 
 function commandMarketList(options: {
   emitOut: (line: string) => void;
   home: OpenStratHome;
+  setJsonData: SetCliJsonData;
 }): void {
   const store = new FileObjectStore(options.home.objectsDir);
-  const refs = listMarketDatasetRefs(options.home);
-  if (refs.length === 0) {
+  const datasets = listMarketDatasetRefs(options.home).map((ref) =>
+    getMarketDatasetManifest(store, ref)
+  );
+  options.setJsonData({
+    command: "market",
+    subcommand: "list",
+    datasets: datasets.map(marketDatasetListItem)
+  });
+  if (datasets.length === 0) {
     options.emitOut("No market datasets found.");
     return;
   }
 
-  for (const ref of refs) {
-    const dataset = store.getJson<MarketDatasetManifest>(ref);
+  for (const dataset of datasets) {
     options.emitOut(
-      `${dataset.canonical_symbol} ${dataset.source} ${dataset.venue} ${ref}`
+      `${dataset.canonical_symbol} ${dataset.source} ${dataset.venue} ${dataset.dataset_ref}`
     );
   }
 }
@@ -1122,6 +1092,7 @@ function commandMarketSnapshot(options: {
   argv: string[];
   emitOut: (line: string) => void;
   home: OpenStratHome;
+  setJsonData: SetCliJsonData;
 }): void {
   const canonicalSymbol = options.argv[0];
   if (!canonicalSymbol) {
@@ -1130,17 +1101,19 @@ function commandMarketSnapshot(options: {
 
   const store = new FileObjectStore(options.home.objectsDir);
   const datasetRef = listMarketDatasetRefs(options.home)
-    .map((ref) => store.getJson<MarketDatasetManifest>(ref))
+    .map((ref) => getMarketDatasetManifest(store, ref))
     .filter((dataset) => dataset.canonical_symbol === canonicalSymbol)
     .sort((left, right) =>
-      right.received_at.localeCompare(left.received_at)
+      right.created_at.localeCompare(left.created_at)
     )[0]?.dataset_ref;
   if (!datasetRef) {
     throw new Error(`Market dataset not found: ${canonicalSymbol}`);
   }
 
-  const dataset = store.getJson<MarketDatasetManifest>(datasetRef);
-  const registry = store.getJson<{ canonical_symbol: string }[]>(dataset.registry_ref);
+  const dataset = getMarketDatasetManifest(store, datasetRef);
+  const registryRef = requireNormalizedRef(dataset, "market_registry").ref;
+  const latestPriceRef = requireNormalizedRef(dataset, "mark_prices").ref;
+  const registry = store.getJson<{ canonical_symbol: string }[]>(registryRef);
   const market = registry.find(
     (entry) => entry.canonical_symbol === dataset.canonical_symbol
   );
@@ -1148,17 +1121,22 @@ function commandMarketSnapshot(options: {
     throw new Error(`Market registry entry not found: ${dataset.canonical_symbol}`);
   }
 
-  options.emitOut(
-    JSON.stringify(
-      {
-        dataset_ref: dataset.dataset_ref,
-        market,
-        latest_price: store.getJson(dataset.latest_price_ref)
-      },
-      null,
-      2
-    )
-  );
+  const latestPrice = store.getJson(latestPriceRef);
+  const snapshot = {
+    command: "market",
+    subcommand: "snapshot",
+    dataset_ref: dataset.dataset_ref,
+    registry_ref: registryRef,
+    latest_price_ref: latestPriceRef,
+    market,
+    latest_price: latestPrice,
+    raw_refs: dataset.raw_refs,
+    normalized_refs: dataset.normalized_refs,
+    freshness: dataset.freshness,
+    source_provenance: dataset.source_provenance
+  };
+  options.setJsonData(snapshot);
+  options.emitOut(JSON.stringify(snapshot, null, 2));
 }
 
 async function commandDoctor(options: {
@@ -1877,6 +1855,43 @@ function listMarketDatasetRefs(home: OpenStratHome): string[] {
   return refs.sort();
 }
 
+function marketDatasetListItem(input: MarketDatasetManifest): CliJsonData {
+  const dataset = MarketDatasetManifestSchema.parse(input);
+  return {
+    dataset_ref: dataset.dataset_ref,
+    canonical_symbol: dataset.canonical_symbol,
+    source: dataset.source,
+    venue: dataset.venue,
+    asset_class: dataset.asset_class,
+    created_at: dataset.created_at,
+    time_range: dataset.time_range,
+    acquisition_method: dataset.acquisition.method,
+    families: dataset.coverage.families,
+    freshness: dataset.freshness,
+    source_provenance: dataset.source_provenance
+  };
+}
+
+function requireNormalizedRef(
+  dataset: MarketDatasetManifest,
+  family: NormalizedMarketDataRef["family"]
+): NormalizedMarketDataRef {
+  const normalizedRef = normalizedRefsFor(dataset, family)[0];
+  if (!normalizedRef) {
+    throw new Error(
+      `Market dataset ${dataset.dataset_ref} is missing normalized ${family} ref`
+    );
+  }
+  return normalizedRef;
+}
+
+function normalizedRefsFor(
+  dataset: MarketDatasetManifest,
+  family: NormalizedMarketDataRef["family"]
+): NormalizedMarketDataRef[] {
+  return dataset.normalized_refs.filter((candidate) => candidate.family === family);
+}
+
 function listObjectRefs(home: OpenStratHome, prefix: string): string[] {
   const root = join(home.objectsDir, ...prefix.split("/"));
   if (!existsSync(root)) {
@@ -1899,10 +1914,6 @@ function listObjectRefs(home: OpenStratHome, prefix: string): string[] {
   };
   walk(root, prefix);
   return refs.sort();
-}
-
-function slugTimestamp(value: string): string {
-  return value.replace(/[:]/g, "-");
 }
 
 function createFixtureHyperliquidClient(): HyperliquidReadClient {
