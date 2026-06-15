@@ -31,4 +31,5 @@ export interface MarketDataReader {
   getOrderbookSnapshot(query: OrderbookQuery): Promise<OrderbookSnapshot>;
 }
 
+export * from "./datasets.js";
 export * from "./hyperliquid/index.js";
