@@ -9,3 +9,4 @@ export * from "./market.js";
 export * from "./risk.js";
 export * from "./strategy.js";
 export * from "./trade.js";
+export * from "./workbench.js";
