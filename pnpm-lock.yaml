@@ -38,15 +38,15 @@ importers:
       '@openstrat/domain':
         specifier: workspace:*
         version: link:../domain
-      '@openstrat/market-data':
-        specifier: workspace:*
-        version: link:../market-data
       '@openstrat/persistence':
         specifier: workspace:*
         version: link:../persistence
       '@openstrat/workers':
         specifier: workspace:*
         version: link:../workers
+      typebox:
+        specifier: 1.1.38
+        version: 1.1.38
       zod:
         specifier: latest
         version: 4.4.3

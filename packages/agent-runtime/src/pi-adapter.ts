@@ -3,10 +3,12 @@ import {
   AgentSessionManifestSchema,
   type AgentSessionManifest
 } from "@openstrat/domain";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { EventLogRepository } from "@openstrat/persistence";
 import type { AgentToolGateway, AgentToolGatewayToolName } from "@openstrat/workers";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createPiAgentGatewayToolDefinitions } from "./pi-tools.js";
 import type { AgentRuntimePolicyEnforcer } from "./runtime-policy.js";
 
 const DISABLED_PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write"] as const;
@@ -72,6 +74,7 @@ export interface PiAgentRuntimeAdapter {
 export interface PiAgentSessionFactoryInput {
   manifest: AgentSessionManifest;
   toolNames: readonly AgentToolGatewayToolName[];
+  toolDefinitions?: readonly ToolDefinition[];
 }
 
 export interface PiAgentSessionLike {
@@ -304,9 +307,17 @@ export function createPiAgentRuntimeAdapter(
           : {})
       }) ??
       manifest.transcript_ref.uri;
+    const toolDefinitions = params.dependencies.toolGateway
+      ? createPiAgentGatewayToolDefinitions({
+          gateway: params.dependencies.toolGateway,
+          session_id: manifest.id,
+          toolNames: filteredToolNames
+        })
+      : [];
     const session = await sessionFactory.create({
       manifest,
-      toolNames: filteredToolNames
+      toolNames: filteredToolNames,
+      ...(toolDefinitions.length > 0 ? { toolDefinitions } : {})
     });
     const runtime: PiAgentRuntimeSession = {
       session_id: manifest.id,
@@ -433,6 +444,7 @@ export function createDefaultPiAgentSessionFactory(): PiAgentSessionFactory {
       const { session } = await pi.createAgentSession({
         agentDir: input.manifest.transcript_ref.uri,
         authStorage,
+        ...(input.toolDefinitions ? { customTools: [...input.toolDefinitions] } : {}),
         cwd: process.cwd(),
         modelRegistry,
         noTools: "builtin",

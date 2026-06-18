@@ -153,6 +153,61 @@ describe("agent tool gateway", () => {
     });
   });
 
+  it("dispatches proposal invoke calls through typed gateway methods", async () => {
+    const { events, gateway, objects } = createGatewayFixture();
+
+    const result = await gateway.invoke({
+      tool_name: "strategy_patch.capture",
+      call_id: "tool_call_invoke_strategy",
+      session_id: "agent_session_001",
+      turn_id: "turn_001",
+      arguments: {
+        proposal: {
+          id: "strategy_patch_invoke_001",
+          created_at: now,
+          session_id: "agent_session_001",
+          status: "proposed",
+          strategy_id: "eth_breakout",
+          base_strategy_version: "0.1.0",
+          patch_format: "unified_diff",
+          patch_ref: "agent-artifacts/strategy_patch_invoke_001.diff",
+          rationale: "Route Pi strategy work through proposal capture.",
+          artifact_ref: proposalRef("strategy_patch_invoke_001")
+        }
+      }
+    });
+
+    expect(result).toMatchObject({
+      id: "strategy_patch_invoke_001",
+      status: "proposed",
+      artifact_ref: {
+        uri: "agent-artifacts/strategy_patch_invoke_001.json"
+      }
+    });
+    expect(objects.exists("agent-artifacts/strategy_patch_invoke_001.json")).toBe(
+      true
+    );
+    expect(events.list("agent_sessions/agent_session_001")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "agent.proposal.captured",
+          payload: expect.objectContaining({
+            tool_name: "strategy_patch.capture",
+            artifact_ref: "agent-artifacts/strategy_patch_invoke_001.json"
+          })
+        }),
+        expect.objectContaining({
+          type: "agent.tool_call.completed",
+          payload: expect.objectContaining({
+            tool_call_id: "tool_call_invoke_strategy",
+            tool_name: "strategy_patch.capture",
+            result_ref: "agent-artifacts/strategy_patch_invoke_001.json"
+          })
+        })
+      ])
+    );
+  });
+
   it("captures backtest, strategy, and memory proposals as append-only artifacts", async () => {
     const { events, gateway, objects } = createGatewayFixture();
 

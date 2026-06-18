@@ -71,6 +71,45 @@ describe("Pi agent runtime adapter", () => {
     });
   });
 
+  it("passes OpenStrat gateway tools to the Pi session factory as custom tool definitions", async () => {
+    const events = new SqliteEventLog(":memory:");
+    const gateway = createAgentToolGateway({
+      events,
+      marketData: new StubMarketDataReader(),
+      objects: new MemoryObjectStore(),
+      risk: stubRiskEngine(),
+      now: () => now
+    });
+    const receivedInputs: unknown[] = [];
+    const adapter = createPiAgentRuntimeAdapter({
+      events,
+      now: () => now,
+      toolGateway: gateway,
+      sessionFactory: {
+        async create(input) {
+          receivedInputs.push(input);
+          return createFakePiAgentSessionFactory().create(input);
+        }
+      }
+    });
+
+    await adapter.startSession({
+      manifest: minimalManifest("agent_session_custom_tools"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+
+    expect(receivedInputs).toHaveLength(1);
+    expect(receivedInputs[0]).toMatchObject({
+      toolNames: ["market_data.read_snapshot"],
+      toolDefinitions: [
+        expect.objectContaining({
+          name: "market_data.read_snapshot",
+          promptSnippet: expect.stringContaining("OpenStrat harness tool")
+        })
+      ]
+    });
+  });
+
   it("projects prompt, tool call, tool result, and agent end events", async () => {
     const events = new SqliteEventLog(":memory:");
     const adapter = createPiAgentRuntimeAdapter({

@@ -4258,6 +4258,7 @@ function createPersistedPiSessionFactory(home: OpenStratHome): PiAgentSessionFac
       const { session } = await pi.createAgentSession({
         agentDir: input.manifest.transcript_ref.uri,
         authStorage,
+        ...(input.toolDefinitions ? { customTools: [...input.toolDefinitions] } : {}),
         cwd: process.cwd(),
         modelRegistry,
         noTools: "builtin",

@@ -240,9 +240,65 @@ export function createAgentToolGateway(
         });
       }
 
-      throw new Error(
-        `direct invocation for ${input.tool_name} requires the typed gateway method`
-      );
+      if (input.tool_name === "backtest.request") {
+        const args = agentToolGatewayToolDefinition(
+          "backtest.request"
+        ).input_schema.parse(input.arguments);
+        return gateway.captureBacktestRequest({
+          call_id: input.call_id,
+          session_id: input.session_id,
+          turn_id: input.turn_id,
+          request: args.request
+        });
+      }
+
+      if (input.tool_name === "risk.validate_intent") {
+        const args = agentToolGatewayToolDefinition(
+          "risk.validate_intent"
+        ).input_schema.parse(input.arguments);
+        return gateway.validateRisk({
+          call_id: input.call_id,
+          session_id: input.session_id,
+          turn_id: input.turn_id,
+          intent: args.intent,
+          policy: args.policy,
+          context: args.context
+        });
+      }
+
+      if (input.tool_name === "strategy_patch.capture") {
+        const args = agentToolGatewayToolDefinition(
+          "strategy_patch.capture"
+        ).input_schema.parse(input.arguments);
+        return gateway.captureStrategyPatchProposal({
+          call_id: input.call_id,
+          session_id: input.session_id,
+          turn_id: input.turn_id,
+          proposal: args.proposal
+        });
+      }
+
+      if (input.tool_name === "memory_proposal.capture") {
+        const args = agentToolGatewayToolDefinition(
+          "memory_proposal.capture"
+        ).input_schema.parse(input.arguments);
+        return gateway.captureMemoryProposal({
+          call_id: input.call_id,
+          session_id: input.session_id,
+          turn_id: input.turn_id,
+          proposal: args.proposal
+        });
+      }
+
+      const args = agentToolGatewayToolDefinition(
+        "deployment_gate.inspect"
+      ).input_schema.parse(input.arguments);
+      return gateway.inspectDeploymentGate({
+        call_id: input.call_id,
+        session_id: input.session_id,
+        turn_id: input.turn_id,
+        gate: args.gate
+      });
     }
   };
 

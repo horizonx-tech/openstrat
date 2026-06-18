@@ -20,6 +20,7 @@
     "@openstrat/domain": "workspace:*",
     "@openstrat/persistence": "workspace:*",
     "@openstrat/workers": "workspace:*",
+    "typebox": "1.1.38",
     "zod": "latest"
   }
 }
