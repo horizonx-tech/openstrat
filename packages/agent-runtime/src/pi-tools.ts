@@ -1,7 +1,4 @@
-import type {
-  AgentToolResult,
-  ToolDefinition
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   agentToolGatewayToolDefinition,
   type AgentToolGateway,
@@ -48,8 +45,7 @@ function createPiAgentGatewayToolDefinition(
         call_id: toolCallId,
         session_id: input.session_id,
         turn_id:
-          input.turnIdForToolCall?.(toolCallId) ??
-          `${input.session_id}:${toolCallId}`,
+          input.turnIdForToolCall?.(toolCallId) ?? `${input.session_id}:${toolCallId}`,
         tool_name: toolName,
         arguments: params as Record<string, unknown>
       });
@@ -134,12 +130,7 @@ function resultRefFrom(result: unknown): string | undefined {
   if (isRecord(artifactRef) && typeof artifactRef.uri === "string") {
     return artifactRef.uri;
   }
-  for (const key of [
-    "dataset_ref",
-    "latest_price_ref",
-    "id",
-    "gate_id"
-  ] as const) {
+  for (const key of ["dataset_ref", "latest_price_ref", "id", "gate_id"] as const) {
     const value = result[key];
     if (typeof value === "string" && value.length > 0) {
       return value;

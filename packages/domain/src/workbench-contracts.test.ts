@@ -22,10 +22,22 @@ describe("interactive workbench contracts", () => {
       slash_commands: [
         { name: "/markets", purpose: "Select or inspect markets.", surface: "menu" },
         { name: "/datasets", purpose: "Inspect available datasets.", surface: "menu" },
-        { name: "/strategy", purpose: "Inspect or propose strategy changes.", surface: "workspace" },
-        { name: "/backtest", purpose: "Run or inspect backtests.", surface: "workspace" },
+        {
+          name: "/strategy",
+          purpose: "Inspect or propose strategy changes.",
+          surface: "workspace"
+        },
+        {
+          name: "/backtest",
+          purpose: "Run or inspect backtests.",
+          surface: "workspace"
+        },
         { name: "/risk", purpose: "Inspect risk gates.", surface: "workspace" },
-        { name: "/deploy", purpose: "Inspect deployment readiness.", surface: "workspace" },
+        {
+          name: "/deploy",
+          purpose: "Inspect deployment readiness.",
+          surface: "workspace"
+        },
         { name: "/status", purpose: "Show project state.", surface: "status" }
       ],
       headless_fallback_commands: [

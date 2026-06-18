@@ -156,22 +156,14 @@ export type WorkbenchPrimaryInteraction = z.infer<
   typeof WorkbenchPrimaryInteractionSchema
 >;
 export type WorkbenchRuntimeCenter = z.infer<typeof WorkbenchRuntimeCenterSchema>;
-export type WorkbenchSlashCommandName = z.infer<
-  typeof WorkbenchSlashCommandNameSchema
->;
+export type WorkbenchSlashCommandName = z.infer<typeof WorkbenchSlashCommandNameSchema>;
 export type WorkbenchSlashCommandSurface = z.infer<
   typeof WorkbenchSlashCommandSurfaceSchema
 >;
 export type WorkbenchWorkPhase = z.infer<typeof WorkbenchWorkPhaseSchema>;
 export type WorkbenchWorkStatus = z.infer<typeof WorkbenchWorkStatusSchema>;
 export type WorkbenchSlashCommand = z.infer<typeof WorkbenchSlashCommandSchema>;
-export type WorkbenchSessionContract = z.infer<
-  typeof WorkbenchSessionContractSchema
->;
+export type WorkbenchSessionContract = z.infer<typeof WorkbenchSessionContractSchema>;
 export type WorkbenchArtifactRefs = z.infer<typeof WorkbenchArtifactRefsSchema>;
-export type WorkbenchVisibleWorkState = z.infer<
-  typeof WorkbenchVisibleWorkStateSchema
->;
-export type WorkbenchSessionSummary = z.infer<
-  typeof WorkbenchSessionSummarySchema
->;
+export type WorkbenchVisibleWorkState = z.infer<typeof WorkbenchVisibleWorkStateSchema>;
+export type WorkbenchSessionSummary = z.infer<typeof WorkbenchSessionSummarySchema>;

@@ -184,9 +184,7 @@ describe("agent tool gateway", () => {
         uri: "agent-artifacts/strategy_patch_invoke_001.json"
       }
     });
-    expect(objects.exists("agent-artifacts/strategy_patch_invoke_001.json")).toBe(
-      true
-    );
+    expect(objects.exists("agent-artifacts/strategy_patch_invoke_001.json")).toBe(true);
     expect(events.list("agent_sessions/agent_session_001")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

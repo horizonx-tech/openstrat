@@ -323,11 +323,7 @@ export async function runOpenStratCli(
       });
     }
 
-    if (
-      argv.length === 0 ||
-      argv[0] === "--prompt" ||
-      argv[0]?.startsWith("/")
-    ) {
+    if (argv.length === 0 || argv[0] === "--prompt" || argv[0]?.startsWith("/")) {
       await commandWorkbenchSession({
         argv,
         cwd,
@@ -2624,7 +2620,9 @@ async function commandPiChat(
     .map((event) => (event.payload as { delta?: string }).delta ?? "")
     .join("");
   const assistantText =
-    deltas || finalAssistantTextFromStream(stream) || "OpenStrat chat session completed.";
+    deltas ||
+    finalAssistantTextFromStream(stream) ||
+    "OpenStrat chat session completed.";
   const summaryRefs = writeWorkbenchSessionSummary({
     assistantText,
     createdAt,
@@ -2885,9 +2883,7 @@ async function commandWorkbenchSlashCommand(
       });
       options.emitOut("markets:");
       for (const market of markets) {
-        options.emitOut(
-          `${market.canonical_symbol} ${market.source} ${market.venue}`
-        );
+        options.emitOut(`${market.canonical_symbol} ${market.source} ${market.venue}`);
       }
       return;
     }
@@ -2914,7 +2910,10 @@ async function commandWorkbenchSlashCommand(
       return;
     }
     case "/strategy":
-      emitWorkbenchStatusRefs(options, ["strategy_manifest_path", "strategy_source_path"]);
+      emitWorkbenchStatusRefs(options, [
+        "strategy_manifest_path",
+        "strategy_source_path"
+      ]);
       return;
     case "/backtest":
       emitWorkbenchStatusRefs(options, [
@@ -3939,9 +3938,7 @@ function buildProjectStatus(
           transcript_ref: latestTranscript.transcript_ref
         }
       : {}),
-    ...(latestSummaryRef
-      ? { workbench_session_summary_ref: latestSummaryRef }
-      : {}),
+    ...(latestSummaryRef ? { workbench_session_summary_ref: latestSummaryRef } : {}),
     ...optionalLatestRef("export_manifest_path", latestRef(exportManifests)),
     ...latestOverrides
   };
