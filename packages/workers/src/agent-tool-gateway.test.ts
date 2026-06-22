@@ -7,10 +7,12 @@ import type {
   RiskReview,
   TradeIntent
 } from "@openstrat/domain";
+import { OPENSTRAT_CODEX_BASELINE_CONTRACT } from "@openstrat/domain";
 import type { MarketDataReader } from "@openstrat/market-data";
 import { SqliteEventLog, type ObjectStore } from "@openstrat/persistence";
 import type { RiskContext, RiskPolicyEngine } from "@openstrat/risk";
 import {
+  AGENT_TOOL_GATEWAY_TOOLS,
   createAgentToolGateway,
   type AgentToolGatewayToolName
 } from "./agent-tool-gateway.js";
@@ -77,6 +79,12 @@ function createGatewayFixture(riskReview: RiskReview = sampleRiskReview("rejecte
 }
 
 describe("agent tool gateway", () => {
+  it("keeps the Codex baseline tool contract aligned with gateway tools", () => {
+    expect(
+      OPENSTRAT_CODEX_BASELINE_CONTRACT.openstrat_tools.map((tool) => tool.name)
+    ).toEqual([...AGENT_TOOL_GATEWAY_TOOLS]);
+  });
+
   it("reads market data through a read-only tool and writes an audit event", async () => {
     const { events, gateway } = createGatewayFixture();
 

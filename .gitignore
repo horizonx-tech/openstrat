@@ -1,5 +1,8 @@
 .DS_Store
+*.tgz
 coverage/
+checkpoint/
+checkpoints/
 node_modules/
 packages/*/dist/
 packages/*/node_modules/

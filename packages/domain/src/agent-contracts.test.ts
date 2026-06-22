@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentArtifactRefSchema,
+  AgentRuntimeConfigSchema,
+  AgentRuntimeKindSchema,
   AgentRuntimeEventSchema,
   AgentSessionManifestSchema,
   AgentToolCallRecordSchema,
@@ -29,9 +31,14 @@ describe("agent domain contracts", () => {
       purpose: "strategy_research",
       autonomy_mode: "strategy_workbench",
       runtime: {
-        kind: "pi",
-        adapter: "@openstrat/agent-runtime/pi",
-        model_profile_id: "model/openai-codex-default"
+        kind: "codex_sdk",
+        adapter: "@openstrat/codex-sdk",
+        model_profile_id: "model/openai-codex-default",
+        provider: "openai",
+        auth_mode: "chatgpt",
+        integration_mode: "sdk",
+        sandbox_mode: "workspace_write",
+        approval_policy: "on_request"
       },
       transcript_ref: {
         id: "artifact_transcript_001",
@@ -60,6 +67,43 @@ describe("agent domain contracts", () => {
       AgentSessionManifestSchema.safeParse({
         ...manifest,
         canonical_ledger_refs: ["trade-ledgers/live.jsonl"]
+      }).success
+    ).toBe(false);
+  });
+
+  it("keeps Pi and OpenClaw out of the baseline runtime contract", () => {
+    expect(AgentRuntimeKindSchema.safeParse("codex_sdk").success).toBe(true);
+    expect(AgentRuntimeKindSchema.safeParse("codex_app_server").success).toBe(true);
+    expect(AgentRuntimeKindSchema.safeParse("pi").success).toBe(false);
+    expect(AgentRuntimeKindSchema.safeParse("openclaw_compat").success).toBe(false);
+
+    expect(
+      AgentRuntimeConfigSchema.safeParse({
+        kind: "codex_sdk",
+        adapter: "@openstrat/codex-sdk",
+        provider: "openai",
+        integration_mode: "sdk",
+        auth_mode: "api_key",
+        sandbox_mode: "workspace_write",
+        approval_policy: "on_request"
+      }).success
+    ).toBe(true);
+
+    expect(
+      AgentRuntimeConfigSchema.safeParse({
+        kind: "codex_sdk",
+        adapter: "@openstrat/codex-sdk",
+        provider: "openrouter",
+        integration_mode: "sdk"
+      }).success
+    ).toBe(false);
+
+    expect(
+      AgentRuntimeConfigSchema.safeParse({
+        kind: "codex_app_server",
+        adapter: "@openstrat/codex-app-server",
+        provider: "openai",
+        integration_mode: "sdk"
       }).success
     ).toBe(false);
   });

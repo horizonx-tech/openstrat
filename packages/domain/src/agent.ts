@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { BotRuntimeModeSchema, DeploymentTargetKindSchema } from "./deployment.js";
 import {
+  CodexApprovalPolicySchema,
+  CodexAuthModeSchema,
+  CodexIntegrationModeSchema,
+  CodexSandboxModeSchema
+} from "./codex.js";
+import {
   AutonomyModeSchema,
   CanonicalSymbolSchema,
   ConfidenceSchema,
@@ -11,20 +17,49 @@ import {
   SourceRefSchema
 } from "./common.js";
 
-export const AgentRuntimeKindSchema = z.enum([
-  "pi",
-  "codex_app_server",
-  "openclaw_compat",
-  "fake"
-]);
+export const AgentRuntimeKindSchema = z.enum(["codex_sdk", "codex_app_server", "fake"]);
 
-export const AgentRuntimeConfigSchema = z.object({
-  kind: AgentRuntimeKindSchema,
-  adapter: NonEmptyStringSchema,
-  model_profile_id: NonEmptyStringSchema.optional(),
-  provider: NonEmptyStringSchema.optional(),
-  model: NonEmptyStringSchema.optional()
-});
+export const AgentRuntimeConfigSchema = z
+  .object({
+    kind: AgentRuntimeKindSchema,
+    adapter: NonEmptyStringSchema,
+    model_profile_id: NonEmptyStringSchema.optional(),
+    provider: NonEmptyStringSchema.optional(),
+    model: NonEmptyStringSchema.optional(),
+    auth_mode: CodexAuthModeSchema.optional(),
+    integration_mode: CodexIntegrationModeSchema.optional(),
+    sandbox_mode: CodexSandboxModeSchema.optional(),
+    approval_policy: CodexApprovalPolicySchema.optional()
+  })
+  .superRefine((runtime, ctx) => {
+    if (
+      runtime.kind === "codex_sdk" &&
+      runtime.integration_mode &&
+      runtime.integration_mode !== "sdk"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "codex_sdk runtimes must use sdk integration mode",
+        path: ["integration_mode"]
+      });
+    }
+
+    if (runtime.kind === "codex_app_server" && runtime.integration_mode === "sdk") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "codex_app_server runtimes must use an app-server transport",
+        path: ["integration_mode"]
+      });
+    }
+
+    if (runtime.kind !== "fake" && runtime.provider && runtime.provider !== "openai") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Codex runtimes must use the openai provider",
+        path: ["provider"]
+      });
+    }
+  });
 
 export const AgentArtifactKindSchema = z.enum([
   "agent_transcript",
