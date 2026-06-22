@@ -32,10 +32,13 @@ openstrat doctor
 ```
 
 By default, `openstrat init` creates the active runtime home at
-`<project>/.openstrat`. Auth, objects, datasets, event logs, transcripts, and
-project artifacts for that strategy workspace live there. Set `OPENSTRAT_HOME`
-only when you intentionally want to override the project-local home, such as in
-hermetic tests.
+`<project>/.openstrat`. Objects, datasets, event logs, transcripts, Pi session
+bindings, and project artifacts for that strategy workspace live there. Codex
+auth is user-scoped under `~/.openstrat/auth/pi-auth.json`; it is not written
+inside the strategy project. Set `OPENSTRAT_HOME` only when you intentionally
+want to override the project-local home, such as in hermetic tests. Set
+`OPENSTRAT_USER_HOME` only when you intentionally want to override the
+user-scoped auth/config root.
 
 Machine-readable output:
 
@@ -64,34 +67,114 @@ required for the fixture-backed test suite.
 
 ## Agent Runtime
 
-`openstrat chat` defaults to the Codex app-server runtime:
+`openstrat` opens the workbench, and `openstrat chat` defaults to the Pi runtime
+with Codex OAuth as the default model/auth profile:
 
 ```bash
+openstrat
 openstrat chat --prompt "Research BTC funding context."
 ```
 
-The Codex path stores OpenStrat-owned runtime state under the active project
+When `openstrat` is run in a real terminal with no prompt, OpenStrat creates a
+Pi `AgentSessionRuntime` and hands control to Pi `InteractiveMode`. OpenStrat
+registers its workbench extension into that runtime, so the chat TUI gets the
+same model/auth/session machinery as the Pi coding-agent CLI plus OpenStrat
+tools and slash-command metadata.
+
+Deterministic slash commands are still available in the headless CLI surface for
+tests, scripting, and non-TTY environments:
+
+```bash
+openstrat /markets
+openstrat /datasets
+openstrat /status
+openstrat /sessions
+openstrat /resume agent_session_123 "Continue this session."
+openstrat /new "Start a fresh session."
+openstrat /compact agent_session_123
+```
+
+OpenStrat extension-backed commands currently include `/markets`, `/datasets`,
+`/status`, `/strategy`, `/backtest`, `/risk`, `/deploy`, and `/sessions`. Pi
+owns the native TUI behavior for `/resume`, `/new`, and `/compact`; OpenStrat's
+headless aliases mirror those actions against project-local session bindings.
+
+Run the Codex login once before using the real Pi runtime:
+
+```bash
+openstrat auth codex
+openstrat chat --prompt "Use my Codex account through the Pi agent loop."
+```
+
+The Pi path stores OpenStrat-owned runtime state under the active project
 `.openstrat` home:
 
-- `agent-runtime/codex-app-server-bindings/*.json` maps OpenStrat session ids to
-  Codex thread ids and transcript refs.
-- `agent-runtime/sessions/*.jsonl` stores OpenStrat-projected transcript events.
+- `agent-runtime/pi-sessions/*.jsonl` stores Pi's persistent session files.
+- `agent-runtime/pi-session-bindings/*.json` maps OpenStrat session ids to Pi
+  session refs and transcript refs.
+- `agent-runtime/sessions/*.jsonl` stores OpenStrat-projected runtime events.
 - `state.sqlite` stores the append-only event log.
 
-Resume a Codex chat session with the session id printed by the first run:
+Resume a Pi-backed chat session with the OpenStrat session id printed by the
+first run:
 
 ```bash
 openstrat chat --resume agent_session_123 --prompt "Continue from the same thread."
+openstrat chat --continue --prompt "Continue the most recent Pi session."
 ```
 
-Pi remains available as an explicit compatibility/runtime path:
+Manual real-auth smoke:
 
 ```bash
-openstrat chat --runtime pi --prompt "Use the Pi runtime path."
+mkdir -p /tmp/openstrat-real-auth-smoke
+cd /tmp/openstrat-real-auth-smoke
+openstrat init
+openstrat auth codex
+openstrat chat --prompt "Confirm OpenStrat is using my Codex account through Pi."
+openstrat chat --resume <printed-agent-session-id> --prompt "Continue this session."
+openstrat reset --purge
+```
+
+The smoke writes project runtime artifacts under `/tmp/openstrat-real-auth-smoke/.openstrat`.
+Codex auth remains user-scoped under `~/.openstrat/auth/pi-auth.json` so the
+project cleanup does not delete account login state.
+
+For repeated live-auth development without touching the normal home directory or
+a real strategy project, run the CLI inside an isolated temp harness:
+
+```bash
+ROOT="$(mktemp -d /tmp/openstrat-live.XXXXXX)"
+mkdir -p "$ROOT/project" "$ROOT/user" "$ROOT/prefix"
+
+export OPENSTRAT_USER_HOME="$ROOT/user"
+export OPENSTRAT_HOME="$ROOT/project/.openstrat"
+export npm_config_prefix="$ROOT/prefix"
+export PATH="$ROOT/prefix/bin:$PATH"
+
+pnpm build
+npm install -g "$PWD/packages/cli"
+cd "$ROOT/project"
+
+openstrat doctor
+openstrat auth codex
+openstrat chat --prompt "Reply with exactly: OpenStrat live auth OK"
+openstrat
+```
+
+Inside the TUI, exercise natural-language prompts and extension-backed commands
+such as `/sessions`. Pi owns native `/compact`, `/new`, and `/resume`, while
+OpenStrat records lifecycle hooks, projected transcripts, session bindings, and
+semantic summaries under the active project `.openstrat` home. TUI-created
+OpenStrat bindings are marked with `source: "tui"` so `/sessions` can show them
+after the TUI exits.
+
+The fake Codex app-server adapter is retained only as an explicit test harness:
+
+```bash
+openstrat chat --runtime fake-codex-app-server --prompt "Exercise fake events."
 ```
 
 Codex-native file and shell tools stay disabled in this harness path. Trading,
 research, risk, proposal, and deployment tools must route through OpenStrat's
 audited `AgentToolGateway`. OpenRouter/BYOK support is intentionally limited to
-model/profile boundaries for now; it is not wired into the Codex app-server
-session lifecycle.
+model/profile boundaries for now.

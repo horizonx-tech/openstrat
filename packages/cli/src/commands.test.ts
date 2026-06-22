@@ -36,6 +36,10 @@ function projectOpenStratRoot(cwd: string): string {
   return join(cwd, ".openstrat");
 }
 
+function userOpenStratRoot(userHome: string): string {
+  return join(userHome, ".openstrat");
+}
+
 describe("openstrat CLI commands", () => {
   it("initializes project-local OpenStrat state in cwd/.openstrat", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
@@ -76,9 +80,68 @@ describe("openstrat CLI commands", () => {
       "primary_interaction: natural_language"
     );
     expect(workbench.stdout.join("\n")).toContain(
-      "slash_commands: /markets, /datasets, /strategy, /backtest, /risk, /deploy, /status"
+      "slash_commands: /markets, /datasets, /status, /strategy, /backtest, /risk, /deploy, /sessions, /resume, /new, /compact"
+    );
+    expect(workbench.stdout.join("\n")).toContain(
+      "command_source: pi_extension_registry"
     );
     expect(workbench.stdout.join("\n")).toContain("ETH-PERP");
+  });
+
+  it("mirrors Pi session commands through the OpenStrat workbench registry", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const env = {
+      HOME: userHome,
+      OPENSTRAT_FAKE_PI: "1"
+    };
+
+    const first = await runOpenStratCli({
+      argv: ["chat", "--prompt", "Start a session for parity testing."],
+      cwd,
+      env
+    });
+    const sessionId = lineValue(first.stdout, "session: ");
+
+    const sessions = await runOpenStratCli({
+      argv: ["/sessions"],
+      cwd,
+      env
+    });
+    const resume = await runOpenStratCli({
+      argv: ["/resume", sessionId, "Continue through the slash command."],
+      cwd,
+      env
+    });
+    const next = await runOpenStratCli({
+      argv: ["/new", "Start a fresh slash-command session."],
+      cwd,
+      env
+    });
+    const compact = await runOpenStratCli({
+      argv: ["/compact", sessionId],
+      cwd,
+      env
+    });
+    const nextSessionId = lineValue(next.stdout, "session: ");
+
+    expect(first.exitCode).toBe(0);
+    expect(sessions.exitCode).toBe(0);
+    expect(sessions.stdout.join("\n")).toContain("sessions:");
+    expect(sessions.stdout.join("\n")).toContain(`session: ${sessionId}`);
+    expect(sessions.stdout.join("\n")).toContain("source: pi_session_bindings");
+    expect(resume.exitCode, resume.stderr.join("\n")).toBe(0);
+    expect(resume.stdout.join("\n")).toContain(`session: ${sessionId}`);
+    expect(resume.stdout.join("\n")).toContain("Hello from OpenStrat.");
+    expect(resume.stdout.join("\n")).not.toContain(
+      "Hello from OpenStrat.Hello from OpenStrat."
+    );
+    expect(resume.stdout.join("\n")).toContain("resumed transcript:");
+    expect(next.exitCode).toBe(0);
+    expect(nextSessionId).not.toBe(sessionId);
+    expect(compact.exitCode).toBe(0);
+    expect(compact.stdout.join("\n")).toContain("compact: supported_by_pi_tui");
+    expect(compact.stdout.join("\n")).toContain(`session: ${sessionId}`);
   });
 
   it("routes default natural-language workbench prompts through Pi", async () => {
@@ -169,6 +232,7 @@ describe("openstrat CLI commands", () => {
     const env = {
       HOME: userHome,
       OPENSTRAT_FAKE_CODEX_AUTH: "1",
+      OPENSTRAT_FAKE_PI: "1",
       OPENSTRAT_FAKE_HYPERLIQUID: "1",
       OPENSTRAT_SKIP_EXTERNAL_CLI_CHECKS: "1"
     };
@@ -309,6 +373,7 @@ describe("openstrat CLI commands", () => {
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
     const env = {
       HOME: userHome,
+      OPENSTRAT_FAKE_PI: "1",
       OPENSTRAT_FAKE_HYPERLIQUID: "1",
       OPENSTRAT_SKIP_EXTERNAL_CLI_CHECKS: "1"
     };
@@ -337,10 +402,10 @@ describe("openstrat CLI commands", () => {
     expect(doctor.stdout.join("\n")).toContain("Codex auth: missing");
     expect(doctor.stdout.join("\n")).not.toContain("access-token");
     expect(chat.stdout.join("\n")).toContain("Hello from OpenStrat");
-    expect(chat.stdout.join("\n")).toContain("runtime: codex_app_server");
-    expect(chat.stdout.join("\n")).toContain("codex thread: codex_thread_");
+    expect(chat.stdout.join("\n")).toContain("runtime: pi");
+    expect(chat.stdout.join("\n")).not.toContain("runtime: codex_app_server");
     expect(chat.stdout.join("\n")).toContain(
-      "disabled native tools: shell,apply_patch,read,write,edit"
+      "disabled native tools: read,bash,edit,write"
     );
     expect(artifacts.stdout.join("\n")).toContain("agent_session_");
     expect(gateway.stdout.join("\n")).toContain("OpenStrat Gateway");
@@ -362,7 +427,7 @@ describe("openstrat CLI commands", () => {
 
     const auth = await runOpenStratCli({ argv: ["auth", "codex"], cwd, env });
     const doctor = await runOpenStratCli({ argv: ["doctor"], cwd, env });
-    const authPath = join(projectOpenStratRoot(cwd), "auth", "pi-auth.json");
+    const authPath = join(userOpenStratRoot(userHome), "auth", "pi-auth.json");
 
     expect(auth.stdout.join("\n")).toContain("openai-codex");
     expect(existsSync(authPath)).toBe(true);
@@ -370,6 +435,22 @@ describe("openstrat CLI commands", () => {
     expect(doctor.stdout.join("\n")).toContain("Codex auth: configured");
     expect(doctor.stdout.join("\n")).not.toContain("fake-access-token");
     expect(doctor.stdout.join("\n")).not.toContain("fake-refresh-token");
+  });
+
+  it("defaults chat to Pi and asks for Codex auth when real auth is missing", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
+    const chat = await runOpenStratCli({
+      argv: ["chat", "--prompt", "hello"],
+      cwd,
+      env: { HOME: userHome }
+    });
+
+    expect(chat.exitCode).toBe(1);
+    expect(chat.stderr.join("\n")).toContain(
+      "Codex auth missing; run openstrat auth codex first"
+    );
+    expect(chat.stdout.join("\n")).not.toContain("runtime: fake_codex_app_server");
   });
 
   it("scaffolds a local strategy workbench and stores validation artifacts under the project namespace", async () => {
@@ -420,7 +501,7 @@ describe("openstrat CLI commands", () => {
       env
     });
 
-    const authPath = join(projectOpenStratRoot(cwd), "auth", "pi-auth.json");
+    const authPath = join(userOpenStratRoot(userHome), "auth", "pi-auth.json");
     const manifestPath = join(cwd, "openstrat.strategy.json");
     const sourcePath = join(cwd, "strategies", "local_btc_breakout.ts");
     const projectId = lineValue(strategyInit.stdout, "project: ");
@@ -447,7 +528,8 @@ describe("openstrat CLI commands", () => {
     expect(existsSync(manifestPath)).toBe(true);
     expect(existsSync(sourcePath)).toBe(true);
     expect(existsSync(projectOpenStratRoot(cwd))).toBe(true);
-    expect(existsSync(join(userHome, ".openstrat"))).toBe(false);
+    expect(existsSync(join(projectOpenStratRoot(cwd), "auth"))).toBe(false);
+    expect(existsSync(userOpenStratRoot(userHome))).toBe(true);
     expect(projectRoot).toBe(`projects/${projectId}`);
     expect(validationRef).toContain(
       `${projectRoot}/workbench/strategy-validations/local_btc_breakout/`
@@ -570,6 +652,12 @@ describe("openstrat CLI commands", () => {
     const sessionId = lineValue(chat.stdout, "session: ");
     const transcriptRef = lineValue(chat.stdout, "transcript: ");
     const chatProjectStatusRef = lineValue(chat.stdout, "project_status: ");
+    const piBindingPath = join(
+      projectOpenStratRoot(cwd),
+      "agent-runtime",
+      "pi-session-bindings",
+      `${sessionId}.json`
+    );
     const resume = await runOpenStratCli({
       argv: [
         "chat",
@@ -703,7 +791,8 @@ describe("openstrat CLI commands", () => {
     expect(chat.exitCode).toBe(0);
     expect(chatProjectStatusRef).toBe(`${projectRoot}/status/latest.json`);
     expect(transcriptRef).toContain(sessionId);
-    expect(resume.exitCode).toBe(0);
+    expect(existsSync(piBindingPath)).toBe(true);
+    expect(resume.exitCode, resume.stderr.join("\n")).toBe(0);
     expect(resume.stdout.join("\n")).toContain(
       `project_status: ${chatProjectStatusRef}`
     );
@@ -739,7 +828,8 @@ describe("openstrat CLI commands", () => {
     expect(Object.keys(bundleArtifacts.objects)).toEqual(
       expect.arrayContaining([reportRef, ledgerRef, gateArtifactRef])
     );
-    expect(existsSync(join(userHome, ".openstrat"))).toBe(false);
+    expect(existsSync(join(projectOpenStratRoot(cwd), "auth"))).toBe(false);
+    expect(existsSync(userOpenStratRoot(userHome))).toBe(true);
   });
 
   it("prints final assistant text when Pi does not stream text deltas", async () => {
@@ -764,7 +854,7 @@ describe("openstrat CLI commands", () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
     const chat = await runOpenStratCli({
-      argv: ["chat", "--prompt", "hello"],
+      argv: ["chat", "--runtime", "fake-codex-app-server", "--prompt", "hello"],
       cwd,
       env: {
         HOME: userHome,
@@ -774,17 +864,17 @@ describe("openstrat CLI commands", () => {
 
     expect(chat.exitCode).toBe(0);
     expect(chat.stdout.join("\n")).toContain("Final assistant text from Codex.");
-    expect(chat.stdout.join("\n")).toContain("runtime: codex_app_server");
+    expect(chat.stdout.join("\n")).toContain("runtime: fake_codex_app_server");
     expect(chat.stdout.join("\n")).not.toContain("OpenStrat chat session completed.");
   });
 
-  it("resumes Codex app-server chat sessions from persisted bindings", async () => {
+  it("resumes explicit fake Codex app-server chat sessions from persisted bindings", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "openstrat-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "openstrat-workspace-"));
     const env = { HOME: userHome };
 
     const first = await runOpenStratCli({
-      argv: ["chat", "--prompt", "hello"],
+      argv: ["chat", "--runtime", "fake-codex-app-server", "--prompt", "hello"],
       cwd,
       env
     });
@@ -792,7 +882,15 @@ describe("openstrat CLI commands", () => {
     const codexThreadId = lineValue(first.stdout, "codex thread: ");
     const transcriptRef = lineValue(first.stdout, "transcript: ");
     const resumed = await runOpenStratCli({
-      argv: ["chat", "--resume", sessionId, "--prompt", "continue"],
+      argv: [
+        "chat",
+        "--runtime",
+        "fake-codex-app-server",
+        "--resume",
+        sessionId,
+        "--prompt",
+        "continue"
+      ],
       cwd,
       env
     });

@@ -8,7 +8,10 @@ import type { EventLogRepository } from "@openstrat/persistence";
 import type { AgentToolGateway, AgentToolGatewayToolName } from "@openstrat/workers";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createPiAgentGatewayToolDefinitions } from "./pi-tools.js";
+import {
+  agentToolGatewayToolNameForPiToolName,
+  createPiAgentGatewayToolDefinitions
+} from "./pi-tools.js";
 import type { AgentRuntimePolicyEnforcer } from "./runtime-policy.js";
 
 const DISABLED_PI_BUILTIN_TOOLS = ["read", "bash", "edit", "write"] as const;
@@ -31,6 +34,7 @@ export interface StartPiAgentSessionInput {
 export interface PiAgentRuntimeSession {
   session_id: string;
   runtime_session_id: string;
+  pi_session_ref?: string;
   enabled_tools: readonly AgentToolGatewayToolName[];
   disabled_builtin_tools: readonly (typeof DISABLED_PI_BUILTIN_TOOLS)[number][];
   transcript_ref: string;
@@ -79,6 +83,7 @@ export interface PiAgentSessionFactoryInput {
 
 export interface PiAgentSessionLike {
   readonly sessionId: string;
+  readonly sessionFile?: string;
   subscribe(listener: (event: PiAgentSessionEvent) => void | Promise<void>): () => void;
   prompt(prompt: string): Promise<void>;
   dispose(): void | Promise<void>;
@@ -93,12 +98,14 @@ export type PiAgentSessionEvent =
       type: "tool_execution_start";
       toolCallId?: string;
       toolName?: string;
+      args?: Record<string, unknown>;
       arguments?: Record<string, unknown>;
     }
   | {
       type: "tool_execution_end";
       toolCallId?: string;
       toolName?: string;
+      result?: unknown;
       isError?: boolean;
     }
   | {
@@ -322,6 +329,7 @@ export function createPiAgentRuntimeAdapter(
     const runtime: PiAgentRuntimeSession = {
       session_id: manifest.id,
       runtime_session_id: session.sessionId,
+      ...(session.sessionFile ? { pi_session_ref: session.sessionFile } : {}),
       enabled_tools: [...filteredToolNames],
       disabled_builtin_tools: [...DISABLED_PI_BUILTIN_TOOLS],
       transcript_ref: transcriptRef,
@@ -350,6 +358,7 @@ export function createPiAgentRuntimeAdapter(
       payload: {
         runtime: manifest.runtime.kind,
         runtime_session_id: session.sessionId,
+        ...(runtime.pi_session_ref ? { pi_session_ref: runtime.pi_session_ref } : {}),
         enabled_tools: runtime.enabled_tools,
         disabled_builtin_tools: runtime.disabled_builtin_tools,
         transcript_ref: runtime.transcript_ref,
@@ -442,16 +451,16 @@ export function createDefaultPiAgentSessionFactory(): PiAgentSessionFactory {
       const authStorage = pi.AuthStorage.inMemory();
       const modelRegistry = pi.ModelRegistry.inMemory(authStorage);
       const { session } = await pi.createAgentSession({
-        agentDir: input.manifest.transcript_ref.uri,
         authStorage,
         ...(input.toolDefinitions ? { customTools: [...input.toolDefinitions] } : {}),
         cwd: process.cwd(),
         modelRegistry,
         noTools: "builtin",
-        sessionManager: pi.SessionManager.inMemory()
+        sessionManager: pi.SessionManager.create(process.cwd())
       });
       return {
         sessionId: session.sessionId,
+        ...(session.sessionFile ? { sessionFile: session.sessionFile } : {}),
         subscribe: (listener) => session.subscribe(listener as never),
         prompt: (prompt) => session.prompt(prompt),
         dispose: () => session.dispose()
@@ -468,9 +477,10 @@ async function projectPiEvent(
   event: PiAgentSessionEvent
 ): Promise<void> {
   if (event.type === "tool_execution_start") {
+    const toolNames = projectedToolNames(event.toolName);
     if (event.toolName && dependencies.policy) {
       try {
-        dependencies.policy.assertToolAllowed(event.toolName);
+        dependencies.policy.assertToolAllowed(toolNames.policyToolName);
       } catch {
         appendRuntimeEvent(dependencies, {
           manifest,
@@ -479,7 +489,7 @@ async function projectPiEvent(
           type: "agent.runtime.tool_call_blocked",
           payload: {
             tool_call_id: event.toolCallId,
-            tool_name: event.toolName,
+            ...toolNamePayload(toolNames),
             reason: "agent tool is forbidden by runtime policy",
             result: blockedResult("agent tool is forbidden by runtime policy")
           }
@@ -496,18 +506,23 @@ async function projectPiEvent(
       type: "agent.runtime.tool_call_requested",
       payload: {
         tool_call_id: toolCallId,
-        tool_name: event.toolName
+        ...toolNamePayload(toolNames)
       }
     });
 
-    if (dependencies.toolGateway && event.toolName) {
+    if (
+      dependencies.toolGateway &&
+      event.toolName &&
+      toolNames.canonicalToolName &&
+      event.toolName === toolNames.canonicalToolName
+    ) {
       try {
         const result = await dependencies.toolGateway.invoke({
           call_id: toolCallId,
           session_id: manifest.id,
           turn_id: `${manifest.id}:turn:${toolCallId}`,
-          tool_name: event.toolName,
-          arguments: event.arguments ?? {}
+          tool_name: toolNames.canonicalToolName,
+          arguments: event.arguments ?? event.args ?? {}
         });
         appendRuntimeEvent(dependencies, {
           manifest,
@@ -516,7 +531,7 @@ async function projectPiEvent(
           type: "agent.runtime.tool_call_completed",
           payload: {
             tool_call_id: toolCallId,
-            tool_name: event.toolName,
+            ...toolNamePayload(toolNames),
             is_error: false,
             result: completedResult(gatewayResultRefPayload(result).result_ref),
             ...gatewayResultRefPayload(result)
@@ -531,7 +546,7 @@ async function projectPiEvent(
           type: "agent.runtime.tool_call_blocked",
           payload: {
             tool_call_id: toolCallId,
-            tool_name: event.toolName,
+            ...toolNamePayload(toolNames),
             reason,
             result: blockedResult(reason)
           }
@@ -542,6 +557,8 @@ async function projectPiEvent(
   }
 
   if (event.type === "tool_execution_end") {
+    const toolNames = projectedToolNames(event.toolName);
+    const resultRefPayload = gatewayResultRefPayload(event.result);
     appendRuntimeEvent(dependencies, {
       manifest,
       occurred_at: occurredAt,
@@ -549,12 +566,13 @@ async function projectPiEvent(
       type: "agent.runtime.tool_call_completed",
       payload: {
         tool_call_id: event.toolCallId,
-        tool_name: event.toolName,
+        ...toolNamePayload(toolNames),
         is_error: event.isError === true,
         result:
           event.isError === true
             ? failedResult("Pi tool execution reported an error")
-            : completedResult(undefined)
+            : completedResult(resultRefPayload.result_ref),
+        ...resultRefPayload
       }
     });
     return;
@@ -573,16 +591,18 @@ async function projectPiEvent(
     return;
   }
 
-  appendRuntimeEvent(dependencies, {
-    manifest,
-    occurred_at: occurredAt,
-    transcript_ref: runtime.transcript_ref,
-    type: "agent.runtime.turn_completed",
-    payload: {
-      message_count: event.messages?.length ?? 0,
-      ...finalAssistantTextPayload(event.messages)
-    }
-  });
+  if (event.type === "agent_end") {
+    appendRuntimeEvent(dependencies, {
+      manifest,
+      occurred_at: occurredAt,
+      transcript_ref: runtime.transcript_ref,
+      type: "agent.runtime.turn_completed",
+      payload: {
+        message_count: event.messages?.length ?? 0,
+        ...finalAssistantTextPayload(event.messages)
+      }
+    });
+  }
 }
 
 function messageUpdateDelta(
@@ -629,9 +649,61 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function projectedToolNames(toolName: string | undefined): {
+  canonicalToolName?: AgentToolGatewayToolName;
+  piToolName?: string;
+  policyToolName: string;
+} {
+  const canonicalToolName = toolName
+    ? agentToolGatewayToolNameForPiToolName(toolName)
+    : undefined;
+  return {
+    ...(canonicalToolName ? { canonicalToolName } : {}),
+    ...(toolName && canonicalToolName !== toolName ? { piToolName: toolName } : {}),
+    policyToolName: canonicalToolName ?? toolName ?? "unknown"
+  };
+}
+
+function toolNamePayload(toolNames: {
+  canonicalToolName?: AgentToolGatewayToolName;
+  piToolName?: string;
+  policyToolName: string;
+}): { pi_tool_name?: string; tool_name: string } {
+  return {
+    tool_name: toolNames.canonicalToolName ?? toolNames.policyToolName,
+    ...(toolNames.piToolName ? { pi_tool_name: toolNames.piToolName } : {})
+  };
+}
+
 function gatewayResultRefPayload(result: unknown): { result_ref?: string } {
   if (!isRecord(result)) {
     return {};
+  }
+  const details = result.details;
+  if (isRecord(details)) {
+    if (typeof details.result_ref === "string" && details.result_ref.length > 0) {
+      return { result_ref: details.result_ref };
+    }
+    const nestedResult = gatewayResultRefPayload(details.result);
+    if (nestedResult.result_ref) {
+      return nestedResult;
+    }
+  }
+  for (const key of [
+    "result_ref",
+    "dataset_ref",
+    "latest_price_ref",
+    "id",
+    "gate_id"
+  ] as const) {
+    const value = result[key];
+    if (typeof value === "string" && value.length > 0) {
+      return { result_ref: value };
+    }
+  }
+  const artifactRef = result.artifact_ref;
+  if (isRecord(artifactRef) && typeof artifactRef.uri === "string") {
+    return { result_ref: artifactRef.uri };
   }
   const latestPrice = result.latest_price;
   if (

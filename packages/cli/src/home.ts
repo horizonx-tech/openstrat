@@ -12,14 +12,17 @@ import { SqliteEventLog } from "@openstrat/persistence";
 
 export interface OpenStratHome {
   root: string;
+  userRoot: string;
   configPath: string;
   stateDbPath: string;
   objectsDir: string;
   sessionsDir: string;
+  piSessionsDir: string;
   projectsDir: string;
   scratchDir: string;
   logsDir: string;
   authDir: string;
+  userAgentDir: string;
 }
 
 export interface ResolveOpenStratHomeOptions {
@@ -44,17 +47,22 @@ export function resolveOpenStratHome(
 ): OpenStratHome {
   const env = options.env ?? process.env;
   const projectRoot = resolve(options.cwd ?? process.cwd());
+  const accountHome = options.userHome ?? env.HOME ?? homedir();
+  const userRoot = resolve(env.OPENSTRAT_USER_HOME ?? join(accountHome, ".openstrat"));
   const root = resolve(env.OPENSTRAT_HOME ?? join(projectRoot, ".openstrat"));
   return {
     root,
+    userRoot,
     configPath: join(root, "config.json"),
     stateDbPath: join(root, "state.sqlite"),
     objectsDir: join(root, "objects"),
     sessionsDir: join(root, "agent-runtime", "sessions"),
+    piSessionsDir: join(root, "agent-runtime", "pi-sessions"),
     projectsDir: join(root, "projects"),
     scratchDir: join(root, "scratch"),
     logsDir: join(root, "logs"),
-    authDir: join(root, "auth")
+    authDir: join(userRoot, "auth"),
+    userAgentDir: join(userRoot, "agent")
   };
 }
 
@@ -63,10 +71,10 @@ export function ensureOpenStratHome(home: OpenStratHome): void {
     home.root,
     home.objectsDir,
     home.sessionsDir,
+    home.piSessionsDir,
     home.projectsDir,
     home.scratchDir,
-    home.logsDir,
-    home.authDir
+    home.logsDir
   ]) {
     mkdirSync(dir, { recursive: true });
   }

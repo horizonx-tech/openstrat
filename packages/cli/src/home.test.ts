@@ -29,10 +29,15 @@ describe("OpenStrat local home", () => {
     expect(existsSync(home.stateDbPath)).toBe(true);
     expect(existsSync(home.objectsDir)).toBe(true);
     expect(existsSync(home.sessionsDir)).toBe(true);
+    expect(existsSync(home.piSessionsDir)).toBe(true);
     expect(existsSync(home.projectsDir)).toBe(true);
     expect(existsSync(home.scratchDir)).toBe(true);
     expect(existsSync(home.logsDir)).toBe(true);
-    expect(getPiAuthPath(home)).toBe(join(home.root, "auth", "pi-auth.json"));
+    expect(home.userRoot).toBe(join(userHome, ".openstrat"));
+    expect(getPiAuthPath(home)).toBe(
+      join(userHome, ".openstrat", "auth", "pi-auth.json")
+    );
+    expect(existsSync(join(home.root, "auth"))).toBe(false);
   });
 
   it("uses OPENSTRAT_HOME as an explicit override for tests and custom runtimes", () => {

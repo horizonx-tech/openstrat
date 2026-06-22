@@ -6,16 +6,25 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, join } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import {
+  AuthStorage,
+  type ExtensionContext,
+  type CreateAgentSessionRuntimeFactory,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionFactory,
+  type ToolDefinition
+} from "@earendil-works/pi-coding-agent";
 import {
   createAgentRuntimePolicy,
   createAgentRuntimePolicyEnforcer,
   createFakePiAgentSessionFactory,
   createPiAgentRuntimeAdapter,
+  createPiAgentGatewayToolDefinitions,
   createStrategyProposalWorkflow,
   FakeCodexAppServerRuntimeAdapter,
   FileCodexAppServerBindingStore,
@@ -30,6 +39,7 @@ import {
 } from "@openstrat/backtesting";
 import {
   AgentResultEnvelopeSchema,
+  type AgentSessionManifest,
   BacktestReportSchema,
   BotRunManifestSchema,
   CandleIntervalSchema,
@@ -79,6 +89,7 @@ import {
 import {
   AGENT_TOOL_GATEWAY_TOOLS,
   type AgentToolGateway,
+  type AgentToolGatewayToolName,
   createAgentToolGateway,
   type DeploymentGateInspection,
   FlyMachineDeploymentProvider,
@@ -105,12 +116,20 @@ const MARKET_FIXTURE_RECEIVED_AT = "2026-06-04T00:00:00.000Z";
 const WORKBENCH_SLASH_COMMANDS = [
   "/markets",
   "/datasets",
+  "/status",
   "/strategy",
   "/backtest",
   "/risk",
   "/deploy",
-  "/status"
+  "/sessions",
+  "/resume",
+  "/new",
+  "/compact"
 ] as const;
+const PI_NATIVE_WORKBENCH_COMMANDS: readonly string[] = ["/resume", "/new", "/compact"];
+const OPENSTRAT_EXTENSION_WORKBENCH_COMMANDS = WORKBENCH_SLASH_COMMANDS.filter(
+  (command) => !PI_NATIVE_WORKBENCH_COMMANDS.includes(command)
+);
 const SAMPLE_STRATEGY_SOURCE = `import { defineStrategy } from "@openstrat/strategy-sdk";
 
 export const strategy = defineStrategy(
@@ -254,6 +273,21 @@ interface ProjectStatusSnapshot {
 type ChatRuntimeKind = "codex_app_server" | "pi";
 type CliJsonData = Record<string, unknown>;
 type SetCliJsonData = (data: CliJsonData) => void;
+
+type PiSessionSelection =
+  | { kind: "create" }
+  | { kind: "continue" }
+  | { kind: "open"; path: string };
+
+interface PiSessionBinding {
+  openstrat_session_id: string;
+  pi_session_id: string;
+  pi_session_ref: string;
+  transcript_ref: string;
+  created_at?: string;
+  source?: "chat" | "tui";
+  updated_at: string;
+}
 
 export interface RunOpenStratCliInput {
   argv: string[];
@@ -2450,9 +2484,6 @@ async function commandChat(options: {
 
   const runtimeKind = chatRuntimeFromArgs(options.argv, options.env);
   if (runtimeKind === "pi") {
-    if (stringFlag(options.argv, "--resume")) {
-      throw new Error("Codex chat resume is only supported for codex_app_server");
-    }
     await commandPiChat(options, prompt);
     return;
   }
@@ -2526,7 +2557,7 @@ async function commandCodexAppServerChat(
       finalAssistantTextFromStream(stream) ||
       "OpenStrat chat session completed."
   );
-  options.emitOut("runtime: codex_app_server");
+  options.emitOut("runtime: fake_codex_app_server");
   options.emitOut(`session: ${sessionId}`);
   options.emitOut(`codex thread: ${runtime.codex_thread_id}`);
   if (runtime.resumed_from_codex_thread_id) {
@@ -2548,6 +2579,9 @@ async function commandPiChat(
   },
   prompt: string
 ): Promise<void> {
+  if (options.env.OPENSTRAT_FAKE_PI !== "1" && !codexAuthConfigured(options.home)) {
+    throw new Error("Codex auth missing; run openstrat auth codex first");
+  }
   const events = new SqliteEventLog(options.home.stateDbPath);
   const now = () => new Date().toISOString();
   const objectStore = new FileObjectStore(options.home.objectsDir);
@@ -2558,7 +2592,25 @@ async function commandPiChat(
     risk: createWorkbenchRiskPolicyEngine(now),
     now
   });
-  const sessionId = `agent_session_${Date.now()}`;
+  const resumeSessionId = stringFlag(options.argv, "--resume");
+  const continueSession =
+    options.argv.includes("--continue") || options.argv.includes("-c");
+  if (resumeSessionId && continueSession) {
+    throw new Error("Pass only one of --resume or --continue");
+  }
+  const existingBinding = resumeSessionId
+    ? readPiSessionBinding(options.home, resumeSessionId)
+    : undefined;
+  if (resumeSessionId && !existingBinding) {
+    throw new Error(`No Pi session binding found for session: ${resumeSessionId}`);
+  }
+  const sessionId =
+    existingBinding?.openstrat_session_id ?? `agent_session_${Date.now()}`;
+  const piSessionSelection: PiSessionSelection = existingBinding
+    ? { kind: "open", path: existingBinding.pi_session_ref }
+    : continueSession
+      ? { kind: "continue" }
+      : { kind: "create" };
   const transcriptStore = new FilePiTranscriptStore(options.home.root);
   const sessionFactory =
     options.env.OPENSTRAT_FAKE_PI === "1"
@@ -2567,7 +2619,10 @@ async function commandPiChat(
             finalOnly: options.env.OPENSTRAT_FAKE_PI_FINAL_ONLY === "1"
           })
         })
-      : createPersistedPiSessionFactory(options.home);
+      : createPersistedPiSessionFactory(options.home, {
+          cwd: options.cwd,
+          sessionSelection: piSessionSelection
+        });
   const adapter = createPiAgentRuntimeAdapter({
     events,
     now,
@@ -2584,37 +2639,54 @@ async function commandPiChat(
   });
 
   const createdAt = new Date().toISOString();
-  const runtime = await adapter.startSession({
-    manifest: {
-      id: sessionId,
-      created_at: createdAt,
-      purpose: "strategy_research",
-      autonomy_mode: "strategy_workbench",
-      runtime: {
-        kind: "pi",
-        adapter: "@openstrat/agent-runtime/pi",
-        model_profile_id: "model/openai-codex-subscription",
-        provider: "openai-codex",
-        model: "gpt-5.5"
-      },
-      transcript_ref: {
-        id: `artifact_transcript_${sessionId}`,
-        kind: "agent_transcript",
-        uri: join(options.home.sessionsDir, `${sessionId}.jsonl`),
-        content_hash: "sha256:pending",
-        created_at: createdAt,
-        append_only: true
-      },
-      event_stream_id: `agent_sessions/${sessionId}`,
-      tool_grant_ids: [],
-      canonical_ledger_refs: []
+  const manifest = {
+    id: sessionId,
+    created_at: createdAt,
+    purpose: "strategy_research",
+    autonomy_mode: "strategy_workbench",
+    runtime: {
+      kind: "pi",
+      adapter: "@openstrat/agent-runtime/pi",
+      model_profile_id: "model/openai-codex-subscription",
+      provider: "openai-codex",
+      model: "gpt-5.5"
     },
-    toolNames: AGENT_TOOL_GATEWAY_TOOLS
-  });
+    transcript_ref: {
+      id: `artifact_transcript_${sessionId}`,
+      kind: "agent_transcript",
+      uri: join(options.home.sessionsDir, `${sessionId}.jsonl`),
+      content_hash: "sha256:pending",
+      created_at: createdAt,
+      append_only: true
+    },
+    event_stream_id: `agent_sessions/${sessionId}`,
+    tool_grant_ids: [],
+    canonical_ledger_refs: []
+  };
+  const runtime = existingBinding
+    ? await adapter.resumeSession({
+        manifest,
+        transcript_ref: existingBinding.transcript_ref,
+        toolNames: AGENT_TOOL_GATEWAY_TOOLS
+      })
+    : await adapter.startSession({
+        manifest,
+        toolNames: AGENT_TOOL_GATEWAY_TOOLS
+      });
+  const promptEventOffset = events.list(`agent_sessions/${sessionId}`).length;
   await adapter.prompt({ session_id: sessionId, prompt });
   await adapter.dispose(sessionId);
+  writePiSessionBinding(options.home, {
+    openstrat_session_id: sessionId,
+    pi_session_id: runtime.runtime_session_id,
+    pi_session_ref: runtime.pi_session_ref ?? runtime.transcript_ref,
+    transcript_ref: runtime.transcript_ref,
+    created_at: createdAt,
+    source: "chat",
+    updated_at: now()
+  });
 
-  const stream = events.list(`agent_sessions/${sessionId}`);
+  const stream = events.list(`agent_sessions/${sessionId}`).slice(promptEventOffset);
   const deltas = stream
     .filter((event) => event.type === "agent.runtime.message_delta")
     .map((event) => (event.payload as { delta?: string }).delta ?? "")
@@ -2635,7 +2707,13 @@ async function commandPiChat(
   options.emitOut(assistantText);
   options.emitOut("runtime: pi");
   options.emitOut(`session: ${sessionId}`);
+  if (runtime.pi_session_ref) {
+    options.emitOut(`pi_session: ${runtime.pi_session_ref}`);
+  }
   options.emitOut(`transcript: ${runtime.transcript_ref}`);
+  if (runtime.resumed_from_transcript_ref) {
+    options.emitOut(`resumed transcript: ${runtime.resumed_from_transcript_ref}`);
+  }
   options.emitOut(`session_summary: ${summaryRefs.summary_ref}`);
   options.emitOut(`project_status: ${summaryRefs.project_status_ref}`);
   options.emitOut(`disabled native tools: ${runtime.disabled_builtin_tools.join(",")}`);
@@ -2761,10 +2839,12 @@ function writeWorkbenchSessionSummary(input: {
     registration,
     "workbench",
     "session-summaries",
-    `${safeRefSegment(input.sessionId)}.json`
+    `${safeRefSegment(input.sessionId)}-${safeRefSegment(input.createdAt)}.json`
   );
   const summary = WorkbenchSessionSummarySchema.parse({
-    id: `workbench_summary_${safeRefSegment(input.sessionId)}`,
+    id: `workbench_summary_${safeRefSegment(input.sessionId)}_${safeRefSegment(
+      input.createdAt
+    )}`,
     session_id: input.sessionId,
     created_at: input.createdAt,
     updated_at: new Date().toISOString(),
@@ -2849,6 +2929,10 @@ async function commandWorkbenchSession(options: {
   setJsonData: SetCliJsonData;
 }): Promise<void> {
   ensureOpenStratHome(options.home);
+  if (shouldLaunchInteractiveWorkbenchTui(options.argv, options.env)) {
+    await commandInteractiveWorkbenchTui(options);
+    return;
+  }
   const prompt = await workbenchPromptFromArgs(options.argv, options.env);
   if (!prompt.trim()) {
     throw new Error("No prompt provided");
@@ -2859,6 +2943,106 @@ async function commandWorkbenchSession(options: {
     return;
   }
   await commandPiChat(options, prompt);
+}
+
+function shouldLaunchInteractiveWorkbenchTui(
+  argv: readonly string[],
+  env: Record<string, string | undefined>
+): boolean {
+  return (
+    argv.length === 0 &&
+    input.isTTY &&
+    !env.OPENSTRAT_WORKBENCH_PROMPT &&
+    env.OPENSTRAT_FAKE_PI !== "1"
+  );
+}
+
+async function commandInteractiveWorkbenchTui(options: {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  home: OpenStratHome;
+}): Promise<void> {
+  if (!codexAuthConfigured(options.home)) {
+    throw new Error("Codex auth missing; run openstrat auth codex first");
+  }
+  const pi = await import("@earendil-works/pi-coding-agent");
+  mkdirSync(options.home.authDir, { recursive: true });
+  mkdirSync(options.home.userAgentDir, { recursive: true });
+  mkdirSync(options.home.piSessionsDir, { recursive: true });
+
+  const events = new SqliteEventLog(options.home.stateDbPath);
+  const now = () => new Date().toISOString();
+  const transcriptStore = new FilePiTranscriptStore(options.home.root);
+  const projection = createInteractiveWorkbenchProjection({
+    cwd: options.cwd,
+    events,
+    home: options.home,
+    now,
+    transcriptStore
+  });
+  const objectStore = new FileObjectStore(options.home.objectsDir);
+  const toolGateway = createAgentToolGateway({
+    events,
+    marketData: new ProjectMarketDataReader(options.home, objectStore),
+    objects: objectStore,
+    risk: createWorkbenchRiskPolicyEngine(now),
+    now
+  });
+  const tuiSessionId = `openstrat_tui_${Date.now()}`;
+  const toolDefinitions = createPiAgentGatewayToolDefinitions({
+    gateway: toolGateway,
+    session_id: tuiSessionId,
+    toolNames: AGENT_TOOL_GATEWAY_TOOLS
+  });
+  const authStorage = pi.AuthStorage.create(getPiAuthPath(options.home));
+  const modelRegistry = pi.ModelRegistry.inMemory(authStorage);
+  const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+    cwd,
+    agentDir,
+    sessionManager,
+    sessionStartEvent
+  }) => {
+    const services = await pi.createAgentSessionServices({
+      cwd,
+      agentDir,
+      authStorage,
+      modelRegistry,
+      resourceLoaderOptions: {
+        extensionFactories: [
+          createOpenStratWorkbenchExtensionFactory({
+            cwd,
+            projectHome: options.home.root,
+            recordLifecycle: projection.recordLifecycle,
+            toolDefinitions
+          })
+        ]
+      }
+    });
+    return {
+      ...(await pi.createAgentSessionFromServices({
+        services,
+        sessionManager,
+        ...(sessionStartEvent ? { sessionStartEvent } : {}),
+        noTools: "builtin"
+      })),
+      services,
+      diagnostics: services.diagnostics
+    };
+  };
+  const runtime = await pi.createAgentSessionRuntime(createRuntime, {
+    cwd: options.cwd,
+    agentDir: options.home.userAgentDir,
+    sessionManager: pi.SessionManager.create(options.cwd, options.home.piSessionsDir)
+  });
+  try {
+    const interactiveMode = new pi.InteractiveMode(runtime, { verbose: true });
+    await interactiveMode.run();
+  } finally {
+    projection.reconcileSessionFiles();
+    projection.dispose();
+    await runtime.dispose();
+    events.close();
+  }
 }
 
 async function commandWorkbenchSlashCommand(
@@ -2872,7 +3056,7 @@ async function commandWorkbenchSlashCommand(
   },
   prompt: string
 ): Promise<void> {
-  const [command] = prompt.split(/\s+/);
+  const [command, ...args] = prompt.split(/\s+/);
   switch (command) {
     case "/markets": {
       const markets = await availableHyperliquidPerpMarkets(options.env);
@@ -2932,6 +3116,18 @@ async function commandWorkbenchSlashCommand(
     case "/status":
       emitWorkbenchStatus(options);
       return;
+    case "/sessions":
+      emitWorkbenchSessions(options);
+      return;
+    case "/resume":
+      await commandWorkbenchResumeSession(options, args);
+      return;
+    case "/new":
+      await commandWorkbenchNewSession(options, args);
+      return;
+    case "/compact":
+      emitWorkbenchCompactStatus(options, args);
+      return;
     default:
       throw new Error(
         `Unknown workbench slash command: ${command}. Available: ${WORKBENCH_SLASH_COMMANDS.join(", ")}`
@@ -2945,8 +3141,118 @@ function emitWorkbenchSessionHeader(emitOut: (line: string) => void): void {
   emitOut("mode: interactive_tui");
   emitOut("primary_interaction: natural_language");
   emitOut("runtime: pi");
+  emitOut("command_source: pi_extension_registry");
   emitOut(`slash_commands: ${WORKBENCH_SLASH_COMMANDS.join(", ")}`);
   emitOut("headless: openstrat chat --prompt, openstrat workbench run --prompt");
+}
+
+function emitWorkbenchSessions(options: {
+  cwd: string;
+  emitOut: (line: string) => void;
+  home: OpenStratHome;
+  setJsonData: SetCliJsonData;
+}): void {
+  const bindings = listPiSessionBindings(options.home);
+  options.setJsonData({
+    command: "workbench",
+    subcommand: "/sessions",
+    sessions: bindings
+  });
+  options.emitOut("sessions:");
+  options.emitOut("source: pi_session_bindings");
+  if (bindings.length === 0) {
+    options.emitOut("No Pi-backed OpenStrat sessions found.");
+    return;
+  }
+  for (const binding of bindings) {
+    options.emitOut(`session: ${binding.openstrat_session_id}`);
+    options.emitOut(`pi_session: ${binding.pi_session_ref}`);
+    options.emitOut(`transcript: ${binding.transcript_ref}`);
+    options.emitOut(`updated_at: ${binding.updated_at}`);
+  }
+}
+
+async function commandWorkbenchResumeSession(
+  options: {
+    argv: string[];
+    cwd: string;
+    emitOut: (line: string) => void;
+    env: Record<string, string | undefined>;
+    home: OpenStratHome;
+  },
+  args: string[]
+): Promise<void> {
+  const [sessionId, ...messageParts] = args;
+  if (!sessionId) {
+    throw new Error("Usage: /resume <session-id> [message]");
+  }
+  const message = messageParts.join(" ").trim();
+  if (!message) {
+    options.emitOut(`resume_command: openstrat chat --resume ${sessionId} --prompt`);
+    return;
+  }
+  await commandPiChat(
+    {
+      ...options,
+      argv: ["--resume", sessionId]
+    },
+    message
+  );
+}
+
+async function commandWorkbenchNewSession(
+  options: {
+    argv: string[];
+    cwd: string;
+    emitOut: (line: string) => void;
+    env: Record<string, string | undefined>;
+    home: OpenStratHome;
+  },
+  args: string[]
+): Promise<void> {
+  const message = args.join(" ").trim();
+  if (!message) {
+    options.emitOut("new_session: waiting_for_prompt");
+    options.emitOut("new_session_command: openstrat chat --prompt");
+    return;
+  }
+  await commandPiChat(
+    {
+      ...options,
+      argv: []
+    },
+    message
+  );
+}
+
+function emitWorkbenchCompactStatus(
+  options: {
+    emitOut: (line: string) => void;
+    home: OpenStratHome;
+    setJsonData: SetCliJsonData;
+  },
+  args: string[]
+): void {
+  const sessionId = args[0];
+  const binding = sessionId ? readPiSessionBinding(options.home, sessionId) : undefined;
+  const data = {
+    command: "workbench",
+    subcommand: "/compact",
+    compact: "supported_by_pi_tui",
+    ...(sessionId ? { session_id: sessionId } : {}),
+    ...(binding ? { pi_session_ref: binding.pi_session_ref } : {})
+  };
+  options.setJsonData(data);
+  options.emitOut("compact: supported_by_pi_tui");
+  options.emitOut(
+    "reason: Pi compact is exposed in the persistent TUI; headless mode records the target session and expected command surface."
+  );
+  if (sessionId) {
+    options.emitOut(`session: ${sessionId}`);
+  }
+  if (binding) {
+    options.emitOut(`pi_session: ${binding.pi_session_ref}`);
+  }
 }
 
 function emitWorkbenchStatus(options: {
@@ -3495,7 +3801,7 @@ function codexChatManifest(home: OpenStratHome, sessionId: string, createdAt: st
 function printHelp(emitOut: (line: string) => void): void {
   emitOut("openstrat <command>");
   emitOut(
-    "commands: create, init, doctor, auth codex, chat [--runtime codex|pi], artifacts, markets list|ingest, market, workbench run, strategy init|validate|propose-sample, backtest run|run-sample, gate create-local|create-sample|inspect, project status, bundle export, deploy, ledger, memory, gateway, upgrade, update, reset --purge"
+    "commands: create, init, doctor, auth codex, chat [--runtime pi|fake-codex-app-server], artifacts, markets list|ingest, market, workbench run, strategy init|validate|propose-sample, backtest run|run-sample, gate create-local|create-sample|inspect, project status, bundle export, deploy, ledger, memory, gateway, upgrade, update, reset --purge"
   );
 }
 
@@ -3563,14 +3869,19 @@ function chatRuntimeFromArgs(
   argv: readonly string[],
   env: Record<string, string | undefined>
 ): ChatRuntimeKind {
-  const raw = stringFlag(argv, "--runtime") ?? env.OPENSTRAT_CHAT_RUNTIME ?? "codex";
+  const raw = stringFlag(argv, "--runtime") ?? env.OPENSTRAT_CHAT_RUNTIME ?? "pi";
   switch (raw) {
+    case "pi":
+      return "pi";
+    case "fake-codex-app-server":
+    case "fake_codex_app_server":
+      return "codex_app_server";
     case "codex":
     case "codex-app-server":
     case "codex_app_server":
-      return "codex_app_server";
-    case "pi":
-      return "pi";
+      throw new Error(
+        "Codex app-server is not a production OpenStrat runtime; use --runtime pi or --runtime fake-codex-app-server for the test harness"
+      );
     default:
       throw new Error(`Unsupported chat runtime: ${raw}`);
   }
@@ -4242,6 +4553,53 @@ function listChatSessions(
     }));
 }
 
+function piSessionBindingsDir(home: OpenStratHome): string {
+  return join(home.root, "agent-runtime", "pi-session-bindings");
+}
+
+function readPiSessionBinding(
+  home: OpenStratHome,
+  sessionId: string
+): PiSessionBinding | undefined {
+  const path = join(piSessionBindingsDir(home), `${safeRefSegment(sessionId)}.json`);
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  return JSON.parse(readFileSync(path, "utf8")) as PiSessionBinding;
+}
+
+function listPiSessionBindings(home: OpenStratHome): PiSessionBinding[] {
+  const dir = piSessionBindingsDir(home);
+  if (!existsSync(dir)) {
+    return [];
+  }
+  return readdirSync(dir)
+    .filter((entry) => entry.endsWith(".json"))
+    .map(
+      (entry) => JSON.parse(readFileSync(join(dir, entry), "utf8")) as PiSessionBinding
+    )
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+}
+
+function findPiSessionBindingByPiSessionRef(
+  home: OpenStratHome,
+  piSessionRef: string
+): PiSessionBinding | undefined {
+  return listPiSessionBindings(home).find(
+    (binding) => binding.pi_session_ref === piSessionRef
+  );
+}
+
+function writePiSessionBinding(home: OpenStratHome, binding: PiSessionBinding): void {
+  const dir = piSessionBindingsDir(home);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `${safeRefSegment(binding.openstrat_session_id)}.json`),
+    `${JSON.stringify(binding, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
+}
+
 function listExportManifestPaths(home: OpenStratHome): string[] {
   const exportsRoot = join(home.root, "exports");
   if (!existsSync(exportsRoot)) {
@@ -4692,23 +5050,631 @@ function finalAssistantTextFromStream(
   return "";
 }
 
-function createPersistedPiSessionFactory(home: OpenStratHome): PiAgentSessionFactory {
+type WorkbenchLifecycleRecorder = (
+  type: string,
+  payload: Record<string, unknown>,
+  ctx: ExtensionContext
+) => void;
+
+function createOpenStratWorkbenchExtensionFactory(input: {
+  cwd: string;
+  projectHome: string;
+  recordLifecycle?: WorkbenchLifecycleRecorder;
+  toolDefinitions: readonly ToolDefinition[];
+}): ExtensionFactory {
+  return (pi: ExtensionAPI) => {
+    for (const tool of input.toolDefinitions) {
+      pi.registerTool(tool);
+    }
+
+    pi.on("session_start", (event, ctx) => {
+      ctx.ui.setStatus("openstrat", "OpenStrat workbench");
+      ctx.ui.setWorkingMessage("OpenStrat is working against project data");
+      pi.setSessionName(pi.getSessionName() ?? "OpenStrat Workbench");
+      const payload = {
+        command_source: "pi_extension_registry",
+        cwd: input.cwd,
+        project_home: input.projectHome,
+        reason: event.reason,
+        previous_session_file: event.previousSessionFile,
+        slash_commands: [...WORKBENCH_SLASH_COMMANDS],
+        pi_native_commands: [...PI_NATIVE_WORKBENCH_COMMANDS],
+        openstrat_extension_commands: [...OPENSTRAT_EXTENSION_WORKBENCH_COMMANDS]
+      };
+      pi.appendEntry("openstrat.workbench.session_start", payload);
+      input.recordLifecycle?.("openstrat.workbench.session_start", payload, ctx);
+    });
+
+    pi.on("session_shutdown", (event, ctx) => {
+      input.recordLifecycle?.(
+        "openstrat.workbench.session_shutdown",
+        {
+          reason: event.reason,
+          target_session_file: event.targetSessionFile
+        },
+        ctx
+      );
+    });
+
+    pi.on("before_agent_start", (event, ctx) => {
+      input.recordLifecycle?.(
+        "agent.runtime.turn_started",
+        {
+          prompt: event.prompt,
+          prompt_ref: `${ctx.sessionManager.getSessionId()}/turn/input`,
+          source: "pi_interactive_tui"
+        },
+        ctx
+      );
+    });
+
+    pi.on("message_update", (event, ctx) => {
+      input.recordLifecycle?.(
+        "agent.runtime.message_delta",
+        {
+          delta: piAssistantMessageDelta(event.assistantMessageEvent)
+        },
+        ctx
+      );
+    });
+
+    pi.on("agent_end", (event, ctx) => {
+      input.recordLifecycle?.(
+        "agent.runtime.turn_completed",
+        {
+          assistant_text: extractLastRoleText(event.messages, "assistant"),
+          message_count: event.messages.length,
+          prompt: extractLastRoleText(event.messages, "user")
+        },
+        ctx
+      );
+    });
+
+    pi.on("tool_execution_start", (event, ctx) => {
+      const toolNames = projectedWorkbenchToolNames(event.toolName);
+      input.recordLifecycle?.(
+        "agent.runtime.tool_call_requested",
+        {
+          arguments: event.args,
+          tool_call_id: event.toolCallId,
+          ...workbenchToolNamePayload(toolNames)
+        },
+        ctx
+      );
+    });
+
+    pi.on("tool_execution_end", (event, ctx) => {
+      const toolNames = projectedWorkbenchToolNames(event.toolName);
+      const resultRefPayload = workbenchResultRefPayload(event.result);
+      input.recordLifecycle?.(
+        "agent.runtime.tool_call_completed",
+        {
+          is_error: event.isError,
+          result: event.isError
+            ? failedWorkbenchResult("Pi tool execution reported an error")
+            : completedWorkbenchResult(resultRefPayload.result_ref),
+          tool_call_id: event.toolCallId,
+          ...workbenchToolNamePayload(toolNames),
+          ...resultRefPayload
+        },
+        ctx
+      );
+    });
+
+    pi.on("session_before_compact", (event, ctx) => {
+      const payload = {
+        source: "pi_extension_registry",
+        preserve: [
+          "OpenStrat artifact refs",
+          "project status refs",
+          "market dataset refs",
+          "backtest and risk refs",
+          "strategy source and manifest paths"
+        ],
+        branch_entries: event.branchEntries.length
+      };
+      pi.appendEntry("openstrat.workbench.before_compact", payload);
+      input.recordLifecycle?.("openstrat.workbench.before_compact", payload, ctx);
+    });
+
+    pi.on("session_compact", (event, ctx) => {
+      const payload = {
+        source: "pi_extension_registry",
+        from_extension: event.fromExtension,
+        compaction_entry_id: event.compactionEntry.id
+      };
+      pi.appendEntry("openstrat.workbench.compact", payload);
+      input.recordLifecycle?.("openstrat.workbench.compact", payload, ctx);
+    });
+
+    for (const command of OPENSTRAT_EXTENSION_WORKBENCH_COMMANDS) {
+      pi.registerCommand(command.slice(1), {
+        description: descriptionForWorkbenchCommand(command),
+        handler: async (args, ctx) => {
+          await handleOpenStratWorkbenchExtensionCommand(
+            command,
+            args,
+            ctx,
+            pi,
+            input.recordLifecycle
+          );
+        }
+      });
+    }
+  };
+}
+
+async function handleOpenStratWorkbenchExtensionCommand(
+  command: string,
+  args: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  recordLifecycle?: WorkbenchLifecycleRecorder
+): Promise<void> {
+  const normalizedArgs = args.trim();
+  const payload = {
+    command,
+    args: normalizedArgs,
+    source: "pi_extension_registry",
+    cwd: ctx.cwd
+  };
+  pi.appendEntry("openstrat.workbench.command", payload);
+  recordLifecycle?.("openstrat.workbench.command", payload, ctx);
+  ctx.ui.setStatus("openstrat", `OpenStrat ${command}`);
+  ctx.ui.notify(
+    `${command} is registered through the OpenStrat Pi extension. Headless deterministic output is available with: openstrat ${command}${normalizedArgs ? ` ${normalizedArgs}` : ""}`,
+    "info"
+  );
+}
+
+interface InteractiveWorkbenchProjection {
+  dispose(): void;
+  reconcileSessionFiles(): void;
+  recordLifecycle: WorkbenchLifecycleRecorder;
+}
+
+interface ActiveInteractiveWorkbenchProjection {
+  createdAt: string;
+  lastPrompt?: string;
+  openstratSessionId: string;
+  piSessionId: string;
+  piSessionRef?: string;
+  transcriptRef: string;
+}
+
+function createInteractiveWorkbenchProjection(input: {
+  cwd: string;
+  events: SqliteEventLog;
+  home: OpenStratHome;
+  now: () => string;
+  transcriptStore: FilePiTranscriptStore;
+}): InteractiveWorkbenchProjection {
+  const initialPiSessionRefs = new Set(listPiSessionFiles(input.home));
+  const projections = new Map<string, ActiveInteractiveWorkbenchProjection>();
+
+  const ensureProjection = (ctx: ExtensionContext) => {
+    const piSessionRef = ctx.sessionManager.getSessionFile();
+    return ensureProjectionForPiSession({
+      ctx,
+      input,
+      piSessionId: ctx.sessionManager.getSessionId(),
+      ...(piSessionRef ? { piSessionRef } : {}),
+      projections
+    });
+  };
+
+  const recordLifecycle: WorkbenchLifecycleRecorder = (type, payload, ctx) => {
+    const projection = ensureProjection(ctx);
+    if (type === "agent.runtime.turn_started" && typeof payload.prompt === "string") {
+      projection.lastPrompt = payload.prompt;
+    }
+    appendInteractiveProjectionEvent(input, projection, type, payload);
+    if (type === "agent.runtime.turn_completed") {
+      const prompt =
+        typeof payload.prompt === "string" && payload.prompt.length > 0
+          ? payload.prompt
+          : (projection.lastPrompt ?? "");
+      const assistantText =
+        typeof payload.assistant_text === "string" ? payload.assistant_text : "";
+      if (prompt || assistantText) {
+        writeWorkbenchSessionSummary({
+          assistantText,
+          createdAt: input.now(),
+          cwd: input.cwd,
+          home: input.home,
+          prompt,
+          sessionId: projection.openstratSessionId,
+          transcriptRef: projection.transcriptRef
+        });
+      }
+    }
+  };
+
+  return {
+    dispose() {
+      projections.clear();
+    },
+    reconcileSessionFiles() {
+      for (const piSessionRef of listPiSessionFiles(input.home)) {
+        if (initialPiSessionRefs.has(piSessionRef) && !projections.has(piSessionRef)) {
+          continue;
+        }
+        if (findPiSessionBindingByPiSessionRef(input.home, piSessionRef)) {
+          continue;
+        }
+        ensureProjectionForPiSession({
+          input,
+          piSessionId: piSessionIdFromFile(piSessionRef),
+          piSessionRef,
+          projections
+        });
+      }
+    },
+    recordLifecycle
+  };
+}
+
+function ensureProjectionForPiSession(input: {
+  ctx?: ExtensionContext;
+  input: {
+    cwd: string;
+    events: SqliteEventLog;
+    home: OpenStratHome;
+    now: () => string;
+    transcriptStore: FilePiTranscriptStore;
+  };
+  piSessionId: string;
+  piSessionRef?: string;
+  projections: Map<string, ActiveInteractiveWorkbenchProjection>;
+}): ActiveInteractiveWorkbenchProjection {
+  const key = input.piSessionRef ?? input.piSessionId;
+  const current = input.projections.get(key);
+  if (current) {
+    return current;
+  }
+  const existingBinding = input.piSessionRef
+    ? findPiSessionBindingByPiSessionRef(input.input.home, input.piSessionRef)
+    : undefined;
+  const createdAt = existingBinding?.created_at ?? input.input.now();
+  const openstratSessionId =
+    existingBinding?.openstrat_session_id ??
+    `agent_session_${Date.now()}_${safeRefSegment(input.piSessionId)}`;
+  const manifest = buildPiWorkbenchAgentManifest({
+    createdAt,
+    home: input.input.home,
+    sessionId: openstratSessionId
+  });
+  const transcriptRef =
+    existingBinding?.transcript_ref && existsSync(existingBinding.transcript_ref)
+      ? existingBinding.transcript_ref
+      : input.input.transcriptStore.create({ manifest });
+  const projection: ActiveInteractiveWorkbenchProjection = {
+    createdAt,
+    openstratSessionId,
+    piSessionId: input.piSessionId,
+    ...(input.piSessionRef ? { piSessionRef: input.piSessionRef } : {}),
+    transcriptRef
+  };
+  input.projections.set(key, projection);
+  writePiSessionBinding(input.input.home, {
+    openstrat_session_id: openstratSessionId,
+    pi_session_id: input.piSessionId,
+    pi_session_ref: input.piSessionRef ?? transcriptRef,
+    transcript_ref: transcriptRef,
+    created_at: createdAt,
+    source: existingBinding?.source ?? "tui",
+    updated_at: input.input.now()
+  });
+  writeProjectStatusArtifact(input.input.home, input.input.cwd, {
+    chat_session_id: openstratSessionId,
+    transcript_ref: transcriptRef
+  });
+  appendInteractiveProjectionEvent(
+    input.input,
+    projection,
+    existingBinding ? "agent.runtime.session_resumed" : "agent.runtime.session_started",
+    {
+      disabled_builtin_tools: ["read", "bash", "edit", "write"],
+      enabled_tools: [...AGENT_TOOL_GATEWAY_TOOLS],
+      pi_session_ref: input.piSessionRef,
+      runtime: "pi",
+      runtime_session_id: input.piSessionId,
+      source: "pi_interactive_tui",
+      transcript_ref: transcriptRef,
+      ...(input.ctx
+        ? {
+            session_name: input.ctx.sessionManager.getSessionName()
+          }
+        : {})
+    }
+  );
+  return projection;
+}
+
+function buildPiWorkbenchAgentManifest(input: {
+  createdAt: string;
+  home: OpenStratHome;
+  sessionId: string;
+}): AgentSessionManifest {
+  return {
+    id: input.sessionId,
+    created_at: input.createdAt,
+    purpose: "strategy_research",
+    autonomy_mode: "strategy_workbench",
+    runtime: {
+      kind: "pi",
+      adapter: "@openstrat/agent-runtime/pi",
+      model_profile_id: "model/openai-codex-subscription",
+      provider: "openai-codex",
+      model: "gpt-5.5"
+    },
+    transcript_ref: {
+      id: `artifact_transcript_${input.sessionId}`,
+      kind: "agent_transcript",
+      uri: join(input.home.sessionsDir, `${input.sessionId}.jsonl`),
+      content_hash: "sha256:pending",
+      created_at: input.createdAt,
+      append_only: true,
+      metadata: {}
+    },
+    event_stream_id: `agent_sessions/${input.sessionId}`,
+    tool_grant_ids: [],
+    canonical_ledger_refs: []
+  };
+}
+
+function appendInteractiveProjectionEvent(
+  input: {
+    events: SqliteEventLog;
+    now: () => string;
+    transcriptStore: FilePiTranscriptStore;
+  },
+  projection: ActiveInteractiveWorkbenchProjection,
+  type: string,
+  payload: Record<string, unknown>
+): void {
+  const occurredAt = input.now();
+  const projectedPayload = {
+    source: "pi_interactive_tui",
+    ...payload
+  };
+  input.events.append({
+    stream_id: `agent_sessions/${projection.openstratSessionId}`,
+    type,
+    occurred_at: occurredAt,
+    payload: projectedPayload,
+    metadata: {
+      runtime: "pi",
+      runtime_session_id: projection.piSessionId,
+      transcript_ref: projection.transcriptRef
+    }
+  });
+  input.transcriptStore.appendRuntimeEvent(projection.transcriptRef, {
+    type,
+    data: projectedPayload
+  });
+}
+
+function listPiSessionFiles(home: OpenStratHome): string[] {
+  if (!existsSync(home.piSessionsDir)) {
+    return [];
+  }
+  return readdirSync(home.piSessionsDir)
+    .filter((entry) => entry.endsWith(".jsonl"))
+    .map((entry) => join(home.piSessionsDir, entry))
+    .sort();
+}
+
+function piSessionIdFromFile(piSessionRef: string): string {
+  try {
+    const firstLine = readFileSync(piSessionRef, "utf8").split("\n")[0];
+    const header = JSON.parse(firstLine ?? "{}") as { id?: unknown };
+    if (typeof header.id === "string" && header.id.length > 0) {
+      return header.id;
+    }
+  } catch {
+    // Fall through to filename-derived id for malformed or unavailable files.
+  }
+  return basename(piSessionRef).replace(/\.jsonl$/u, "");
+}
+
+function agentToolGatewayToolNameForPiToolName(
+  toolName: string
+): AgentToolGatewayToolName | undefined {
+  return AGENT_TOOL_GATEWAY_TOOLS.find(
+    (gatewayToolName) =>
+      gatewayToolName === toolName ||
+      `openstrat_${gatewayToolName.replace(/[^a-zA-Z0-9_-]/gu, "_")}` === toolName
+  );
+}
+
+function projectedWorkbenchToolNames(toolName: string): {
+  canonicalToolName?: AgentToolGatewayToolName;
+  piToolName?: string;
+  policyToolName: string;
+} {
+  const canonicalToolName = agentToolGatewayToolNameForPiToolName(toolName);
+  return {
+    ...(canonicalToolName ? { canonicalToolName } : {}),
+    ...(canonicalToolName !== toolName ? { piToolName: toolName } : {}),
+    policyToolName: canonicalToolName ?? toolName
+  };
+}
+
+function workbenchToolNamePayload(toolNames: {
+  canonicalToolName?: AgentToolGatewayToolName;
+  piToolName?: string;
+  policyToolName: string;
+}): { pi_tool_name?: string; tool_name: string } {
+  return {
+    tool_name: toolNames.canonicalToolName ?? toolNames.policyToolName,
+    ...(toolNames.piToolName ? { pi_tool_name: toolNames.piToolName } : {})
+  };
+}
+
+function completedWorkbenchResult(resultRef: string | undefined): AgentResultEnvelope {
+  return AgentResultEnvelopeSchema.parse({
+    status: "completed",
+    ...(resultRef ? { result_ref: resultRef } : {}),
+    side_effect: "none"
+  });
+}
+
+function failedWorkbenchResult(error: string): AgentResultEnvelope {
+  return AgentResultEnvelopeSchema.parse({
+    status: "failed",
+    error,
+    side_effect: "none"
+  });
+}
+
+function workbenchResultRefPayload(result: unknown): { result_ref?: string } {
+  if (!isRecord(result)) {
+    return {};
+  }
+  const details = result.details;
+  if (isRecord(details)) {
+    if (typeof details.result_ref === "string" && details.result_ref.length > 0) {
+      return { result_ref: details.result_ref };
+    }
+    const nestedResult = workbenchResultRefPayload(details.result);
+    if (nestedResult.result_ref) {
+      return nestedResult;
+    }
+  }
+  for (const key of [
+    "result_ref",
+    "dataset_ref",
+    "latest_price_ref",
+    "id",
+    "gate_id"
+  ] as const) {
+    const value = result[key];
+    if (typeof value === "string" && value.length > 0) {
+      return { result_ref: value };
+    }
+  }
+  const artifactRef = result.artifact_ref;
+  if (isRecord(artifactRef) && typeof artifactRef.uri === "string") {
+    return { result_ref: artifactRef.uri };
+  }
+  return {};
+}
+
+function piAssistantMessageDelta(assistantMessageEvent: unknown): string {
+  if (
+    isRecord(assistantMessageEvent) &&
+    assistantMessageEvent.type === "text_delta" &&
+    typeof assistantMessageEvent.delta === "string"
+  ) {
+    return assistantMessageEvent.delta;
+  }
+  return "";
+}
+
+function extractLastRoleText(messages: readonly unknown[], role: string): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (isRecord(message) && message.role === role) {
+      return extractMessageText(message);
+    }
+  }
+  return "";
+}
+
+function extractMessageText(message: unknown): string {
+  if (!isRecord(message)) {
+    return "";
+  }
+  const content = message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((item) =>
+      isRecord(item) && item.type === "text" && typeof item.text === "string"
+        ? item.text
+        : ""
+    )
+    .join("");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function descriptionForWorkbenchCommand(command: string): string {
+  switch (command) {
+    case "/markets":
+      return "Show available OpenStrat Hyperliquid perp markets.";
+    case "/datasets":
+      return "Show ingested OpenStrat market datasets for this project.";
+    case "/status":
+      return "Show current OpenStrat project state and latest artifact refs.";
+    case "/strategy":
+      return "Show current strategy manifest/source refs.";
+    case "/backtest":
+      return "Show current backtest request, report, metrics, and summary refs.";
+    case "/risk":
+      return "Show current risk/deployment-gate refs.";
+    case "/deploy":
+      return "Show deployment readiness refs without launching deployment.";
+    case "/sessions":
+      return "Show OpenStrat Pi-backed session binding guidance.";
+    default:
+      return "Run an OpenStrat deterministic workbench command.";
+  }
+}
+
+function createPersistedPiSessionFactory(
+  home: OpenStratHome,
+  options: { cwd: string; sessionSelection: PiSessionSelection }
+): PiAgentSessionFactory {
   return {
     async create(input) {
       const pi = await import("@earendil-works/pi-coding-agent");
+      mkdirSync(home.authDir, { recursive: true });
+      mkdirSync(home.userAgentDir, { recursive: true });
+      mkdirSync(home.piSessionsDir, { recursive: true });
       const authStorage = pi.AuthStorage.create(getPiAuthPath(home));
       const modelRegistry = pi.ModelRegistry.inMemory(authStorage);
+      const resourceLoader = new pi.DefaultResourceLoader({
+        cwd: options.cwd,
+        agentDir: home.userAgentDir,
+        extensionFactories: [
+          createOpenStratWorkbenchExtensionFactory({
+            cwd: options.cwd,
+            projectHome: home.root,
+            toolDefinitions: input.toolDefinitions ?? []
+          })
+        ]
+      });
+      await resourceLoader.reload();
+      const sessionManager =
+        options.sessionSelection.kind === "open"
+          ? pi.SessionManager.open(
+              options.sessionSelection.path,
+              home.piSessionsDir,
+              options.cwd
+            )
+          : options.sessionSelection.kind === "continue"
+            ? pi.SessionManager.continueRecent(options.cwd, home.piSessionsDir)
+            : pi.SessionManager.create(options.cwd, home.piSessionsDir);
       const { session } = await pi.createAgentSession({
-        agentDir: input.manifest.transcript_ref.uri,
+        agentDir: home.userAgentDir,
         authStorage,
-        ...(input.toolDefinitions ? { customTools: [...input.toolDefinitions] } : {}),
-        cwd: process.cwd(),
+        cwd: options.cwd,
         modelRegistry,
         noTools: "builtin",
-        sessionManager: pi.SessionManager.inMemory()
+        resourceLoader,
+        sessionManager
       });
       return {
         sessionId: session.sessionId,
+        ...(session.sessionFile ? { sessionFile: session.sessionFile } : {}),
         subscribe: (listener) => session.subscribe(listener as never),
         prompt: (prompt) => session.prompt(prompt),
         dispose: () => session.dispose()

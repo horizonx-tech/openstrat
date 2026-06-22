@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AgentToolGateway } from "@openstrat/workers";
-import { createPiAgentGatewayToolDefinitions } from "./pi-tools.js";
+import {
+  agentToolGatewayToolNameForPiToolName,
+  createPiAgentGatewayToolDefinitions,
+  piToolNameFor
+} from "./pi-tools.js";
 
 describe("Pi gateway tool definitions", () => {
   it("wraps OpenStrat gateway tools as Pi custom tools", async () => {
@@ -15,7 +19,10 @@ describe("Pi gateway tool definitions", () => {
       toolNames: ["market_data.read_snapshot"]
     });
 
-    expect(tools.map((tool) => tool.name)).toEqual(["market_data.read_snapshot"]);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "openstrat_market_data_read_snapshot"
+    ]);
+    expect(tools[0]?.name).toMatch(/^[a-zA-Z0-9_-]+$/u);
     expect(tools[0]?.promptSnippet).toContain("OpenStrat harness tool");
 
     const result = await tools[0]?.execute(
@@ -48,6 +55,18 @@ describe("Pi gateway tool definitions", () => {
         side_effect: "none"
       }
     });
+  });
+
+  it("maps Pi-facing tool names back to canonical OpenStrat gateway names", () => {
+    expect(piToolNameFor("market_data.read_snapshot")).toBe(
+      "openstrat_market_data_read_snapshot"
+    );
+    expect(
+      agentToolGatewayToolNameForPiToolName("openstrat_market_data_read_snapshot")
+    ).toBe("market_data.read_snapshot");
+    expect(agentToolGatewayToolNameForPiToolName("market_data.read_snapshot")).toBe(
+      "market_data.read_snapshot"
+    );
   });
 });
 

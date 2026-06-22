@@ -40,11 +40,11 @@ export const OpenStratModelProfileSchema = z
         });
       }
     }
-    if (codexOAuth && profile.runtime_kind !== "codex_app_server") {
+    if (codexOAuth && profile.provider !== "openai-codex") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "OpenAI Codex OAuth is only valid for codex_app_server profiles",
-        path: ["runtime_kind"]
+        message: "OpenAI Codex OAuth profiles must use openai-codex provider",
+        path: ["provider"]
       });
     }
   });

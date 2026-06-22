@@ -23,7 +23,7 @@ describe("OpenStrat Pi model routing", () => {
     expect(
       OpenStratModelProfileSchema.safeParse({
         id: "model/openai-codex-subscription",
-        runtime_kind: "codex_app_server",
+        runtime_kind: "pi",
         provider: "openai-codex",
         model: "gpt-5.5",
         auth: {
@@ -105,7 +105,7 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/missing-openai",
-      runtime_kind: "codex_app_server",
+      runtime_kind: "pi",
       provider: "openai-codex",
       model: "gpt-5.5",
       auth: {
@@ -135,7 +135,7 @@ describe("OpenStrat Pi model routing", () => {
 
     const result = await router.resolveProfile({
       id: "model/openai-codex-subscription",
-      runtime_kind: "codex_app_server",
+      runtime_kind: "pi",
       provider: "openai-codex",
       model: "gpt-5.5",
       auth: {

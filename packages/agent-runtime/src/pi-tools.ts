@@ -1,5 +1,6 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+  AGENT_TOOL_GATEWAY_TOOLS,
   agentToolGatewayToolDefinition,
   type AgentToolGateway,
   type AgentToolGatewayToolName
@@ -27,7 +28,7 @@ function createPiAgentGatewayToolDefinition(
 ): ToolDefinition {
   const registryDefinition = agentToolGatewayToolDefinition(toolName);
   return {
-    name: toolName,
+    name: piToolNameFor(toolName),
     label: `OpenStrat ${toolName}`,
     description: descriptionFor(toolName),
     promptSnippet: `OpenStrat harness tool: ${toolName}. Use this instead of native file, shell, or exchange mutation for trading workbench state.`,
@@ -71,6 +72,19 @@ function createPiAgentGatewayToolDefinition(
       };
     }
   };
+}
+
+export function piToolNameFor(toolName: AgentToolGatewayToolName): string {
+  return `openstrat_${toolName.replace(/[^a-zA-Z0-9_-]/gu, "_")}`;
+}
+
+export function agentToolGatewayToolNameForPiToolName(
+  toolName: string
+): AgentToolGatewayToolName | undefined {
+  return AGENT_TOOL_GATEWAY_TOOLS.find(
+    (gatewayToolName) =>
+      gatewayToolName === toolName || piToolNameFor(gatewayToolName) === toolName
+  );
 }
 
 function parametersFor(toolName: AgentToolGatewayToolName) {

@@ -7,7 +7,7 @@ import type { MarketDatum, MarketRegistryEntry, RiskReview } from "@openstrat/do
 import type { MarketDataReader } from "@openstrat/market-data";
 import { SqliteEventLog, type ObjectStore } from "@openstrat/persistence";
 import type { RiskPolicyEngine } from "@openstrat/risk";
-import { createAgentToolGateway } from "@openstrat/workers";
+import { createAgentToolGateway, type AgentToolGateway } from "@openstrat/workers";
 import {
   createFakePiAgentSessionFactory,
   createPiAgentRuntimeAdapter,
@@ -103,7 +103,7 @@ describe("Pi agent runtime adapter", () => {
       toolNames: ["market_data.read_snapshot"],
       toolDefinitions: [
         expect.objectContaining({
-          name: "market_data.read_snapshot",
+          name: "openstrat_market_data_read_snapshot",
           promptSnippet: expect.stringContaining("OpenStrat harness tool")
         })
       ]
@@ -231,6 +231,95 @@ describe("Pi agent runtime adapter", () => {
               side_effect: "none"
             },
             is_error: false
+          })
+        })
+      ])
+    );
+  });
+
+  it("projects Pi-facing custom tool events as canonical OpenStrat tool events", async () => {
+    const events = new SqliteEventLog(":memory:");
+    const gatewayInvocations: unknown[] = [];
+    const gateway: AgentToolGateway = {
+      tool_names: ["market_data.read_snapshot"],
+      async invoke(input) {
+        gatewayInvocations.push(input);
+        throw new Error("gateway should not be re-invoked for Pi-facing tool events");
+      }
+    } as AgentToolGateway;
+    const adapter = createPiAgentRuntimeAdapter({
+      events,
+      now: () => now,
+      toolGateway: gateway,
+      policy: createAgentRuntimePolicyEnforcer(
+        createAgentRuntimePolicy({
+          autonomy_mode: "strategy_workbench",
+          allowed_model_profile_ids: ["model/fake"],
+          allowed_tool_names: ["market_data.read_snapshot"]
+        })
+      ),
+      sessionFactory: createFakePiAgentSessionFactory({
+        events: [
+          {
+            type: "tool_execution_start",
+            toolCallId: "tool_call_market",
+            toolName: "openstrat_market_data_read_snapshot",
+            args: {
+              canonical_symbol: "ETH-PERP"
+            }
+          },
+          {
+            type: "tool_execution_end",
+            toolCallId: "tool_call_market",
+            toolName: "openstrat_market_data_read_snapshot",
+            result: {
+              details: {
+                result_ref: "datasets/hyperliquid/ETH-PERP/latest.json"
+              }
+            },
+            isError: false
+          },
+          {
+            type: "agent_end",
+            messages: []
+          }
+        ] as never
+      })
+    });
+
+    const session = await adapter.startSession({
+      manifest: minimalManifest("agent_session_pi_tool_projection"),
+      toolNames: ["market_data.read_snapshot"]
+    });
+
+    await adapter.prompt({
+      session_id: session.session_id,
+      prompt: "Read the latest ETH market data."
+    });
+
+    expect(gatewayInvocations).toEqual([]);
+    expect(
+      events.list("agent_sessions/agent_session_pi_tool_projection").map((event) => ({
+        type: event.type,
+        payload: event.payload
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "agent.runtime.tool_call_requested",
+          payload: expect.objectContaining({
+            pi_tool_name: "openstrat_market_data_read_snapshot",
+            tool_call_id: "tool_call_market",
+            tool_name: "market_data.read_snapshot"
+          })
+        }),
+        expect.objectContaining({
+          type: "agent.runtime.tool_call_completed",
+          payload: expect.objectContaining({
+            pi_tool_name: "openstrat_market_data_read_snapshot",
+            result_ref: "datasets/hyperliquid/ETH-PERP/latest.json",
+            tool_call_id: "tool_call_market",
+            tool_name: "market_data.read_snapshot"
           })
         })
       ])
