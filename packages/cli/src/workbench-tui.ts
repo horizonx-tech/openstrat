@@ -230,15 +230,40 @@ export function renderWorkbenchTuiAppend(
   const lines: string[] = [];
 
   if (options.updatedEntry) {
-    lines.push(
-      ...renderFlowEntryUpdate(
-        options.updatedEntry,
-        width,
-        style,
-        state.toolsExpanded,
-        state.thinkingVisible
-      )
-    );
+    const activeView = state.activeView;
+    const updatesActiveCommand =
+      activeView !== undefined &&
+      options.updatedEntry.kind === "command" &&
+      state.entries[activeCommandIndex] === options.updatedEntry;
+    if (updatesActiveCommand) {
+      lines.push(
+        ...renderFlowEntry(
+          options.updatedEntry,
+          width,
+          style,
+          state.toolsExpanded,
+          state.thinkingVisible,
+          true
+        ),
+        ...renderInlineWorkbenchOutput(
+          activeView,
+          width,
+          style,
+          state.toolsExpanded,
+          commandBlockTone(options.updatedEntry.title)
+        )
+      );
+    } else {
+      lines.push(
+        ...renderFlowEntryUpdate(
+          options.updatedEntry,
+          width,
+          style,
+          state.toolsExpanded,
+          state.thinkingVisible
+        )
+      );
+    }
   }
 
   state.entries.slice(fromEntry).forEach((entry, index) => {
@@ -596,7 +621,14 @@ function renderFlowEntryUpdate(
   if (entry.kind === "tool_call") {
     return [
       "",
-      ...renderToolUpdateBlock("update", body, width, style, "pending", toolsExpanded)
+      ...renderToolUpdateBlock(
+        entry.title,
+        body,
+        width,
+        style,
+        "pending",
+        toolsExpanded
+      )
     ];
   }
   if (entry.kind === "tool_result") {
@@ -766,7 +798,11 @@ function renderToolBlock(
   if (isShellCommandTitle(title)) {
     return renderShellCommandBlock(title, body, width, style, tone, expanded);
   }
-  const bodyRows = formatToolBodyRows(title, body, expanded, maxBodyLines);
+  const formattedBodyRows = formatToolBodyRows(title, body, expanded, maxBodyLines);
+  const bodyRows =
+    tone === "pending" && formattedBodyRows.length === 0
+      ? ["Running..."]
+      : formattedBodyRows;
   const rows = [title, ...bodyRows].flatMap((line, index) => {
     const prefix = index === 0 ? "" : "  ";
     return wrapPrefixedLine(prefix, line, width);
@@ -815,12 +851,15 @@ function renderToolUpdateBlock(
   if (isShellCommandTitle(title)) {
     return renderShellCommandBlock(title, body, width, style, tone, expanded);
   }
-  const rows = [title, ...formatToolBodyRows(title, body, expanded)].flatMap(
-    (line, index) => {
-      const prefix = index === 0 ? "" : "  ";
-      return wrapPrefixedLine(prefix, line, width);
-    }
-  );
+  const formattedBodyRows = formatToolBodyRows(title, body, expanded);
+  const bodyRows =
+    tone === "pending" && formattedBodyRows.length === 0
+      ? ["Running..."]
+      : formattedBodyRows;
+  const rows = [title, ...bodyRows].flatMap((line, index) => {
+    const prefix = index === 0 ? "" : "  ";
+    return wrapPrefixedLine(prefix, line, width);
+  });
   const styleName =
     tone === "error" ? "toolError" : tone === "pending" ? "toolPending" : "toolSuccess";
   return renderPaddedToolRows(rows, width, style, styleName);
@@ -849,22 +888,13 @@ function renderShellCommandBlock(
   tone: "pending" | "success" | "error",
   expanded: boolean
 ): string[] {
-  const borderTone = tone === "error" ? "shellErrorBorder" : "bashBorder";
-  const titleTone = tone === "error" ? "toolErrorTitle" : "bashTitle";
-  const outputTone = tone === "error" ? "toolErrorOutput" : "bashOutput";
-  const border = colorize("─".repeat(width), style, borderTone);
-  const titleRows = wrapPrefixedLine("  ", title, width).map((line) =>
-    colorize(padRight(line, width), style, titleTone)
-  );
-  const bodyRows = formatShellCommandBodyRows(title, body, expanded, tone).flatMap(
-    (line) => wrapPrefixedLine("  ", line, width)
-  );
-  return [
-    border,
-    ...titleRows,
-    ...bodyRows.map((line) => colorize(padRight(line, width), style, outputTone)),
-    border
-  ];
+  const rows = [
+    title,
+    ...formatShellCommandBodyRows(title, body, expanded, tone)
+  ].flatMap((line) => wrapPrefixedLine("  ", line, width));
+  const styleName =
+    tone === "error" ? "toolError" : tone === "pending" ? "toolPending" : "toolSuccess";
+  return renderPaddedToolRows(rows, width, style, styleName);
 }
 
 function formatShellCommandBodyRows(
@@ -873,11 +903,26 @@ function formatShellCommandBodyRows(
   expanded: boolean,
   tone: "pending" | "success" | "error"
 ): string[] {
-  const rows = formatToolBodyRows(title, body, expanded);
-  if (tone !== "pending") {
-    return rows;
+  const outputRows = stripToolMetadataRows(sectionToolBody(title, body));
+  if (expanded) {
+    return clipToolLines(outputRows, true);
   }
-  return [...rows.filter((line) => line !== "status in_progress"), "Running..."];
+  if (tone === "pending") {
+    return ["Running..."];
+  }
+  if (tone === "error") {
+    const errorRows = outputRows.length > 0 ? clipToolLines(outputRows, false, 4) : [];
+    return ["Failed", ...errorRows];
+  }
+  const outputLineCount = outputRows.filter(
+    (line) => !isToolSectionHeading(line)
+  ).length;
+  return [
+    "Completed",
+    outputLineCount > 0
+      ? `... (${outputLineCount} output ${outputLineCount === 1 ? "line" : "lines"}, ctrl+o to expand)`
+      : undefined
+  ].filter((line): line is string => line !== undefined);
 }
 
 function isShellCommandTitle(title: string): boolean {
@@ -915,14 +960,15 @@ function sectionToolBody(title: string, body: string[]): string[] {
   const pendingStdout: string[] = [];
   let currentSection: "stdout" | "stderr" | "body" | undefined;
 
+  const isShell = title.startsWith("$ ");
   const flushStdout = () => {
     if (pendingStdout.length === 0) {
       return;
     }
-    if (title.startsWith("$ ")) {
+    if (isShell) {
       rows.push("stdout", ...pendingStdout.map((line) => `  ${line}`));
     } else {
-      rows.push(...pendingStdout);
+      rows.push(...pendingStdout.filter((line) => !isHiddenToolRow(line)));
     }
     pendingStdout.length = 0;
   };
@@ -932,9 +978,14 @@ function sectionToolBody(title: string, body: string[]): string[] {
     if (section?.[1] !== undefined) {
       flushStdout();
       currentSection = section[1].toLowerCase() as "stdout" | "stderr" | "body";
-      rows.push(currentSection);
-      if (section[2]) {
-        rows.push(`  ${section[2]}`);
+      if (isShell || currentSection !== "body") {
+        rows.push(currentSection);
+      }
+      const sectionText = summarizeToolBodyValue(section[2] ?? "");
+      if (sectionText) {
+        rows.push(
+          isShell || currentSection !== "body" ? `  ${sectionText}` : sectionText
+        );
       }
       continue;
     }
@@ -943,12 +994,19 @@ function sectionToolBody(title: string, body: string[]): string[] {
     if (metadata?.[1] !== undefined) {
       flushStdout();
       currentSection = undefined;
-      rows.push(`${metadata[1].toLowerCase()} ${metadata[2] ?? ""}`.trim());
+      if (isShell) {
+        rows.push(`${metadata[1].toLowerCase()} ${metadata[2] ?? ""}`.trim());
+      }
       continue;
     }
 
     if (currentSection) {
-      rows.push(`  ${line}`);
+      const sectionLine = summarizeToolBodyValue(line);
+      if (sectionLine && !isHiddenToolRow(sectionLine)) {
+        rows.push(
+          isShell || currentSection !== "body" ? `  ${sectionLine}` : sectionLine
+        );
+      }
       continue;
     }
     pendingStdout.push(line);
@@ -956,6 +1014,54 @@ function sectionToolBody(title: string, body: string[]): string[] {
 
   flushStdout();
   return rows;
+}
+
+function stripToolMetadataRows(rows: string[]): string[] {
+  return rows.filter((row) => !/^(status|exit)\b/i.test(row.trim()));
+}
+
+function isToolSectionHeading(line: string): boolean {
+  return ["stdout", "stderr", "body"].includes(line.trim());
+}
+
+function isHiddenToolRow(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    /^args\b/i.test(trimmed) || /^status\b/i.test(trimmed) || /^exit\b/i.test(trimmed)
+  );
+}
+
+function summarizeToolBodyValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const summary = summarizeToolJson(parsed);
+    return summary ?? value;
+  } catch {
+    return value;
+  }
+}
+
+function summarizeToolJson(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim() || undefined;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of ["message", "summary", "description"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
 }
 
 function stripRedundantToolTarget(title: string, rows: string[]): string[] {
@@ -1271,13 +1377,13 @@ function colorize(
     shellErrorBorder: ["38;2;204;102;102"],
     toolPending: ["48;2;40;40;50", "38;2;212;212;212"],
     toolPendingTitle: ["48;2;40;40;50", "1", "38;2;212;212;212"],
-    toolPendingOutput: ["48;2;40;40;50", "38;2;176;184;184"],
+    toolPendingOutput: ["48;2;40;40;50", "38;2;212;212;212"],
     toolSuccess: ["48;2;40;50;40", "38;2;212;212;212"],
     toolSuccessTitle: ["48;2;40;50;40", "1", "38;2;212;212;212"],
-    toolSuccessOutput: ["48;2;40;50;40", "38;2;176;184;184"],
+    toolSuccessOutput: ["48;2;40;50;40", "38;2;212;212;212"],
     toolError: ["48;2;60;40;40", "38;2;212;212;212"],
     toolErrorTitle: ["48;2;60;40;40", "1", "38;2;212;212;212"],
-    toolErrorOutput: ["48;2;60;40;40", "38;2;176;184;184"],
+    toolErrorOutput: ["48;2;60;40;40", "38;2;212;212;212"],
     toolTitle: ["1", "38;2;212;212;212"]
   };
   return `${codes[tone].map((code) => `\x1b[${code}m`).join("")}${value}\x1b[0m`;

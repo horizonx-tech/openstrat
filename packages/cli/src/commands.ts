@@ -494,13 +494,24 @@ async function runWorkbenchTui(
             }
             const progress = projectCodexProgressEvent(event);
             if (progress) {
-              const replacesEntry =
-                progress.id !== undefined &&
-                tui.entries.some((entry) => entry.id === progress.id);
+              const existingEntry =
+                progress.id === undefined
+                  ? undefined
+                  : tui.entries.find((entry) => entry.id === progress.id);
+              const replacesEntry = existingEntry !== undefined;
+              const changesEntry =
+                existingEntry === undefined ||
+                existingEntry.kind !== progress.kind ||
+                existingEntry.title !== progress.title ||
+                existingEntry.body !== progress.body;
               tui = recordTuiEntry(tui, progress);
-              render(
-                replacesEntry ? { updatedEntry: progress } : { appendedEntries: 1 }
-              );
+              if (changesEntry) {
+                render(
+                  replacesEntry ? { updatedEntry: progress } : { appendedEntries: 1 }
+                );
+              } else if (footer) {
+                render();
+              }
             } else if (footer) {
               render();
             }
@@ -786,7 +797,8 @@ function latestExpandableToolEntry(
       entry &&
       (entry.kind === "tool_call" ||
         entry.kind === "tool_result" ||
-        entry.kind === "tool_error")
+        entry.kind === "tool_error" ||
+        entry.kind === "command")
     ) {
       return entry;
     }
@@ -1941,7 +1953,7 @@ function projectCodexProgressEvent(event: ThreadEvent): WorkbenchTuiEntry | unde
       kind: terminalToolKind(item.status),
       title: `$ ${item.command}`,
       body: [
-        item.aggregated_output.trim(),
+        item.status === "in_progress" ? undefined : item.aggregated_output.trim(),
         `status: ${item.status}`,
         item.exit_code !== undefined ? `exit: ${item.exit_code}` : undefined
       ]
@@ -2102,13 +2114,13 @@ function formatMcpToolBody(input: {
   status: "in_progress" | "completed" | "failed";
   arguments: unknown;
 }): string {
+  if (input.status === "in_progress") {
+    return "";
+  }
   const result = summarizeMcpResult(input.result);
-  const args = summarizeUnknown(input.arguments);
   return [
     input.error ? `stderr: ${input.error}` : undefined,
-    result ? `body: ${result}` : undefined,
-    args ? `${result ? "args" : "body: args"} ${args}` : undefined,
-    `status: ${input.status}`
+    result ? `body: ${result}` : undefined
   ]
     .filter((line): line is string => line !== undefined && line.length > 0)
     .join("\n");
@@ -2129,25 +2141,80 @@ function summarizeMcpResult(
   if (!result) {
     return undefined;
   }
-  const structured = summarizeUnknown(result.structured_content);
+  const structured = summarizeStructuredContent(result.structured_content);
   if (structured) {
     return structured;
   }
-  return summarizeUnknown(result.content);
+  return summarizeContentList(result.content);
 }
 
-function summarizeUnknown(value: unknown): string | undefined {
+function summarizeStructuredContent(value: unknown): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value === "string") {
-    return value;
+    return summarizeStructuredString(value) ?? value;
+  }
+  if (isRecord(value)) {
+    for (const key of ["message", "summary", "description"]) {
+      const text = stringRecordValue(value, key);
+      if (text) {
+        return text;
+      }
+    }
+    const nestedResult = summarizeStructuredContent(value.result);
+    if (nestedResult) {
+      return nestedResult;
+    }
+    const error = stringRecordValue(value, "error");
+    if (error) {
+      return error;
+    }
+    const status = stringRecordValue(value, "status");
+    if (status && status !== "completed") {
+      return status;
+    }
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return summarizeContentList(value);
+  }
+  return undefined;
+}
+
+function summarizeStructuredString(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return undefined;
   }
   try {
-    return JSON.stringify(value);
+    return summarizeStructuredContent(JSON.parse(trimmed));
   } catch {
-    return String(value);
+    return undefined;
   }
+}
+
+function summarizeContentList(content: unknown[]): string | undefined {
+  for (const item of content) {
+    if (typeof item === "string") {
+      const text = summarizeStructuredString(item) ?? item.trim();
+      if (text) {
+        return text;
+      }
+      continue;
+    }
+    if (isRecord(item)) {
+      const text = stringRecordValue(item, "text");
+      if (text) {
+        return summarizeStructuredString(text) ?? text;
+      }
+    }
+    const summarized = summarizeStructuredContent(item);
+    if (summarized) {
+      return summarized;
+    }
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

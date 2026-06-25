@@ -107,7 +107,7 @@ function mcpToolDescription(toolName: AgentToolGatewayToolName): string {
     case "dataset.plan_ingestion":
       return "Plan market-data ingestion from a natural-language trading need. Propose commands; do not ingest until approved.";
     case "dataset.execute_ingestion":
-      return "Ingest approved market data into the project .openstrat object store. Use fixture=true for deterministic local tests or live=true for Hyperliquid read-only API access.";
+      return "Ingest approved market data into the project .openstrat object store. Use live=true for Hyperliquid read-only API access; fixture=true is reserved for deterministic local test runs.";
     case "dataset.validate":
       return "Validate that indexed dataset refs and candle rows are usable before strategy/backtest work.";
     case "dataset.inspect":

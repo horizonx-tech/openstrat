@@ -257,6 +257,8 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(output.join("\n")).toContain(".openstrat");
     expect(output.join("\n")).toContain("OpenStrat local workbench commands");
     expect(output.join("\n")).toContain("Guided local strategy workbench path");
+    expect(output.join("\n")).toContain("--live");
+    expect(output.join("\n")).not.toContain("--fixture");
     expect(output.join("\n")).toContain("Started new OpenStrat session");
     expect(output.join("\n")).toContain("write src/strategy.ts");
     expect(output.join("\n")).toContain("Found 1 strategy source candidate");
@@ -1036,7 +1038,7 @@ describe("OpenStrat CLI Codex workbench", () => {
       "\x1b[48;2;40;50;40m\x1b[38;2;128;128;128m  Hyperliquid perps"
     );
     expect(rendered).toContain(
-      "\x1b[48;2;40;50;40m\x1b[38;2;176;184;184m  Hyperliquid perps"
+      "\x1b[48;2;40;50;40m\x1b[38;2;212;212;212m  Hyperliquid perps"
     );
     expect(rendered).not.toContain(
       "\x1b[48;2;40;50;40m\x1b[38;2;212;212;212m  Market Catalog"
@@ -1079,7 +1081,7 @@ describe("OpenStrat CLI Codex workbench", () => {
       "\x1b[48;2;40;50;40m\x1b[1m\x1b[38;2;212;212;212mOpenStrat /markets ok"
     );
     expect(rendered).toContain(
-      "\x1b[48;2;40;50;40m\x1b[38;2;176;184;184m  Hyperliquid perps"
+      "\x1b[48;2;40;50;40m\x1b[38;2;212;212;212m  Hyperliquid perps"
     );
     expect(rendered).not.toContain("\nOpenStrat /markets ok\n");
   });
@@ -1196,16 +1198,18 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(rendered).toContain("\x1b[38;2;236;174;236m");
     expect(rendered).toContain("\x1b[3m");
     expect(rendered).toContain("\x1b[38;2;0;215;255m");
-    expect(rendered).toContain("\x1b[38;2;181;189;104m");
+    expect(rendered).toContain("\x1b[48;2;40;50;40m");
     expect(rendered.split("\x1b[48;2;40;40;50m").length - 1).toBeGreaterThanOrEqual(3);
     expect(rendered).toContain("\x1b[48;2;60;40;40m");
-    expect(rendered).toContain("\x1b[1m\x1b[38;2;181;189;104m  $ pnpm test");
-    expect(rendered).toContain("\x1b[38;2;176;184;184m  stdout");
+    expect(rendered).toContain(
+      "\x1b[48;2;40;50;40m\x1b[1m\x1b[38;2;212;212;212m  $ pnpm test"
+    );
+    expect(rendered).toContain("\x1b[48;2;40;50;40m\x1b[38;2;212;212;212m  Completed");
     expect(rendered).toContain(
       "\x1b[48;2;60;40;40m\x1b[1m\x1b[38;2;212;212;212m  $ pnpm lint"
     );
     expect(rendered).toContain(
-      "\x1b[48;2;60;40;40m\x1b[38;2;176;184;184m    lint failed"
+      "\x1b[48;2;60;40;40m\x1b[38;2;212;212;212m    lint failed"
     );
     expect(plain).toContain("testing text output and rendering behaviour");
     expect(plain).toContain("The user is testing text output; respond briefly.");
@@ -1320,8 +1324,9 @@ describe("OpenStrat CLI Codex workbench", () => {
       })
     );
 
-    expect(collapsed).toContain("line 10: tool output");
+    expect(collapsed).toContain("Completed");
     expect(collapsed).toContain("ctrl+o to expand");
+    expect(collapsed).not.toContain("line 10: tool output");
     expect(collapsed).not.toContain("line 16: tool output");
     expect(expanded).toContain("line 16: tool output");
     expect(expanded).toContain("ctrl+o to collapse");
@@ -1358,7 +1363,7 @@ describe("OpenStrat CLI Codex workbench", () => {
       ]
     });
 
-    const rendered = renderWorkbenchTui(state, {
+    const rendered = renderWorkbenchTui(setTuiToolsExpanded(state, true), {
       width: 92,
       showComposer: false,
       color: true
@@ -1373,13 +1378,13 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(plain).toContain("  deprecated flag");
     expect(plain).toContain("body");
     expect(plain).toContain("  structured result accepted");
-    expect(plain).toContain("status completed");
-    expect(plain).toContain("exit 0");
+    expect(plain).not.toContain("status completed");
+    expect(plain).not.toContain("exit 0");
     expect(plain).not.toContain("stderr: deprecated flag");
     expect(plain).not.toContain("body: structured result accepted");
   });
 
-  it("renders shell command results with a Pi-style bash frame", () => {
+  it("renders collapsed shell command results as a clean Pi-style action row", () => {
     const fixture = createFixture();
     const home = resolveOpenStratCliHome({ cwd: fixture.project, env: fixture.env });
     const session = createWorkbenchSession(home, fixture.project);
@@ -1408,18 +1413,14 @@ describe("OpenStrat CLI Codex workbench", () => {
       color: true
     });
     const plain = stripAnsi(rendered);
-    const shellRuleCount = plain
-      .split("\n")
-      .filter((line) => /^─+$/.test(line.trim())).length;
-
-    expect(shellRuleCount).toBeGreaterThanOrEqual(2);
-    expect(rendered).toContain("\x1b[38;2;181;189;104m");
-    expect(rendered).toContain("\x1b[1m\x1b[38;2;181;189;104m  $ pnpm test");
-    expect(rendered).toContain("\x1b[38;2;176;184;184m  stdout");
+    expect(rendered).toContain("\x1b[48;2;40;50;40m");
+    expect(rendered).toContain("\x1b[1m\x1b[38;2;212;212;212m  $ pnpm test");
     expect(plain).toContain("$ pnpm test");
-    expect(plain).toContain("RUN packages/cli/src/commands.test.ts");
-    expect(plain).toContain("status completed");
-    expect(plain).toContain("exit 0");
+    expect(plain).toContain("Completed");
+    expect(plain).toContain("ctrl+o to expand");
+    expect(plain).not.toContain("RUN packages/cli/src/commands.test.ts");
+    expect(plain).not.toContain("status completed");
+    expect(plain).not.toContain("exit 0");
   });
 
   it("renders pending shell commands with a Pi-style running row", () => {
@@ -1455,8 +1456,9 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(plain).toContain("$ pnpm test");
     expect(plain).toContain("Running...");
     expect(plain).not.toContain("status in_progress");
-    expect(rendered).toContain("\x1b[1m\x1b[38;2;181;189;104m  $ pnpm test");
-    expect(rendered).toContain("\x1b[38;2;176;184;184m  Running...");
+    expect(rendered).toContain("\x1b[48;2;40;40;50m");
+    expect(rendered).toContain("\x1b[1m\x1b[38;2;212;212;212m  $ pnpm test");
+    expect(rendered).toContain("\x1b[38;2;212;212;212m  Running...");
   });
 
   it("toggles thinking traces between visible content and a Pi-style hidden label", () => {
@@ -1546,8 +1548,9 @@ describe("OpenStrat CLI Codex workbench", () => {
 
     expect((plain.match(/\$ pnpm test/g) ?? []).length).toBe(1);
     expect(plain).not.toContain("status: in_progress");
-    expect(plain).toContain("28 passed");
-    expect(rendered).toContain("\x1b[38;2;181;189;104m");
+    expect(plain).not.toContain("28 passed");
+    expect(plain).toContain("Completed");
+    expect(rendered).toContain("\x1b[48;2;40;50;40m");
   });
 
   it("restates tool action titles in appended update rows", () => {
@@ -1580,7 +1583,8 @@ describe("OpenStrat CLI Codex workbench", () => {
 
     expect(plain).toContain("read SOL-PERP");
     expect(plain).toContain("market loaded");
-    expect(plain).toContain("status completed");
+    expect(plain).not.toContain("status completed");
+    expect(plain).not.toContain('{"status":"completed"');
     expect(plain).not.toContain("\ncompleted");
   });
 
@@ -1801,15 +1805,16 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(result.exitCode).toBe(0);
     expect(rawScreen).toContain("\x1b[3m");
     expect(rawScreen).toContain("\x1b[48;2;40;40;50m");
-    expect(rawScreen).toContain("\x1b[38;2;181;189;104m");
+    expect(rawScreen).toContain("\x1b[48;2;40;50;40m");
     expect(rawScreen).toContain("\x1b[48;2;60;40;40m");
     expect(plain).toContain(
       "I should inspect the local strategy files before responding."
     );
     expect(plain).toContain("$ pnpm test");
     expect((plain.match(/\$ pnpm test/g) ?? []).length).toBe(2);
-    expect(plain).toContain("RUN packages/cli/src/commands.test.ts");
-    expect(plain).toContain("28 passed");
+    expect(plain).not.toContain("RUN packages/cli/src/commands.test.ts");
+    expect(plain).not.toContain("28 passed");
+    expect(plain).toContain("Completed");
     expect(plain).toContain("read SOL-PERP");
     expect(plain).toContain("market is not loaded");
     expect(plain).toContain("scripted-final-response");
@@ -1895,12 +1900,14 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(result.exitCode).toBe(0);
     expect(plain).toContain("read SOL-PERP");
     expect(plain).toContain("check src/strategy.ts");
-    expect(plain).toContain("body");
     expect(plain).toContain("market loaded");
     expect(plain).toContain("stderr");
     expect(plain).toContain("missing dataset evidence");
-    expect(plain).toContain("status completed");
-    expect(plain).toContain("status failed");
+    expect(plain).toContain("Running...");
+    expect(plain).not.toContain("status completed");
+    expect(plain).not.toContain("status failed");
+    expect(plain).not.toContain("canonical_symbol");
+    expect(plain).not.toContain("strategy_file");
     expect(plain).not.toContain("openstrat.market_data_read_snapshot");
     expect(plain).not.toContain("openstrat.strategy_validate");
     expect(stdout).toContain("bye");
@@ -1969,8 +1976,8 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(plain).toContain("write src/strategy.ts");
     expect(plain).toContain("edit src/risk.ts");
     expect(plain).toContain("delete src/obsolete.ts");
-    expect(plain).toContain("status completed");
-    expect(plain).toContain("status failed");
+    expect(plain).not.toContain("status completed");
+    expect(plain).not.toContain("status failed");
     expect(plain).not.toContain("file_change completed");
     expect(plain).not.toContain("file_change failed");
     expect(stdout).toContain("bye");
@@ -2053,6 +2060,55 @@ describe("OpenStrat CLI Codex workbench", () => {
       terminal.output.indexOf("ctrl+o to expand")
     );
     expect(plain).not.toContain("CHNaN");
+    expect(plain).not.toContain("\x0f");
+    expect(stdout).toContain("bye");
+  });
+
+  it("lets ctrl-o expand the latest clipped slash-command output in the live TTY", async () => {
+    const fixture = createFixture();
+    const stdout: string[] = [];
+    const terminal = new CapturingTtyWritable(110, 28);
+    const stdin = new PassThrough();
+    let promptCount = 0;
+    terminal.onPrompt = () => {
+      promptCount += 1;
+      if (promptCount === 1) {
+        queueMicrotask(() => {
+          stdin.write("/help\n");
+        });
+        return;
+      }
+      if (promptCount === 2) {
+        queueMicrotask(() => {
+          stdin.write("\x0f");
+          stdin.write("/exit\n");
+          stdin.end();
+        });
+      }
+    };
+
+    const result = await runOpenStratCli({
+      argv: [],
+      cwd: fixture.project,
+      env: {
+        ...fixture.env,
+        OPENSTRAT_CODEX_RUNTIME: "fake"
+      },
+      stdin,
+      output: terminal,
+      stdout: (line) => stdout.push(line),
+      stderr: (line) => stdout.push(line)
+    });
+
+    const plain = stripAnsi(terminal.output);
+    expect(result.exitCode).toBe(0);
+    expect(plain).toContain("ctrl+o to expand");
+    expect(plain).toContain("Guided path:");
+    expect(plain).toContain("ctrl+o to collapse");
+    const expandedOutputIndex = terminal.output.indexOf("Guided path:");
+    expect(terminal.output.lastIndexOf("\x1b[J", expandedOutputIndex)).toBeGreaterThan(
+      terminal.output.indexOf("ctrl+o to expand")
+    );
     expect(plain).not.toContain("\x0f");
     expect(stdout).toContain("bye");
   });
@@ -2863,6 +2919,8 @@ describe("OpenStrat CLI Codex workbench", () => {
     expect(output.join("\n")).toContain('"symbol": "SOL"');
     expect(output.join("\n")).toContain('"5m"');
     expect(output.join("\n")).toContain('"15m"');
+    expect(output.join("\n")).toContain("--live");
+    expect(output.join("\n")).not.toContain("--fixture");
 
     const failed: string[] = [];
     const ingestResult = await runOpenStratCli({
@@ -2884,8 +2942,8 @@ describe("OpenStrat CLI Codex workbench", () => {
       stderr: (line) => failed.push(line)
     });
     expect(ingestResult.exitCode).toBe(1);
-    expect(failed.join("\n")).toContain("requires --fixture");
-    expect(failed.join("\n")).toContain("next: Use `--fixture`");
+    expect(failed.join("\n")).toContain("requires --live");
+    expect(failed.join("\n")).toContain("next: Pass `--live`");
   });
 
   it("returns actionable strategy validation and risk threshold failures", async () => {

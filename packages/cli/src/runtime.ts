@@ -287,6 +287,7 @@ function openStratPrompt(prompt: string): string {
     "Use Codex native file and shell tools for code inspection, edits, tests, and validation.",
     "Use OpenStrat MCP tools for trading-domain context when available.",
     "For market data requests, infer missing symbol, venue, interval, and date-range assumptions, then propose an OpenStrat ingest command before executing ingestion.",
+    "Product-facing market-data guidance should prefer guarded --live Hyperliquid read-only ingestion; mention fixture/test ingestion only when the user explicitly asks for deterministic local tests.",
     "For strategy work, connect dataset refs, strategy validation, local backtest evidence, and risk preflight artifacts instead of stopping at freeform code generation.",
     "Generated strategy code must stay exchange-agnostic and use OpenStrat strategy contracts.",
     "",

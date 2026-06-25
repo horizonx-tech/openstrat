@@ -327,7 +327,7 @@ export function repairHintForError(message: string): string | undefined {
     return "Run `/datasets plan`, approve an ingest command, then `/datasets validate` and `/datasets inspect`.";
   }
   if (/requires --fixture|--live/i.test(message)) {
-    return "Use `--fixture` for deterministic local tests or `--live` for approved Hyperliquid read-only ingestion.";
+    return "Pass `--live` for approved Hyperliquid read-only ingestion. `--fixture` is reserved for deterministic local test runs.";
   }
   if (/backtest|Backtest/i.test(message)) {
     return "Validate dataset and strategy evidence first, then run `/backtest plan` followed by `/backtest run`.";
@@ -346,7 +346,7 @@ export function guidedWorkflow(snapshot: WorkbenchSnapshot): string[] {
       ? "Codex auth is configured for live turns."
       : "Run `openstrat auth codex` before expecting live Codex turns.",
     '/datasets plan "SOL token 5m and 15m scalping data"',
-    "/datasets ingest --symbol SOL --interval 5m --start <iso-start> --end <iso-end> --fixture",
+    "/datasets ingest --symbol SOL --interval 5m --start <iso-start> --end <iso-end> --live",
     datasetId ? `/datasets validate ${datasetId}` : "/datasets validate",
     datasetId ? `/datasets inspect ${datasetId}` : "/datasets inspect",
     datasetId

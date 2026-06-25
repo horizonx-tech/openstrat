@@ -348,7 +348,7 @@ export async function ingestDataset(
 ): Promise<DatasetIndexEntry> {
   if (input.fixture !== true && input.live !== true) {
     throw new Error(
-      "Dataset ingestion requires --fixture for deterministic local data or --live for Hyperliquid read-only API access."
+      "Dataset ingestion requires --live for Hyperliquid read-only API access. Use --fixture only for deterministic local test data."
     );
   }
 
