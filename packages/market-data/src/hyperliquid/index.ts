@@ -47,6 +47,55 @@ export const HyperliquidMetaAndAssetCtxsRequestSchema = z.object({
   dex: z.string().optional()
 });
 
+export const HyperliquidAllMidsRequestSchema = z.object({
+  type: z.literal("allMids"),
+  dex: z.string().optional()
+});
+
+export const HyperliquidPerpDexsRequestSchema = z.object({
+  type: z.literal("perpDexs")
+});
+
+export const HyperliquidPredictedFundingsRequestSchema = z.object({
+  type: z.literal("predictedFundings")
+});
+
+export const HyperliquidPerpsAtOpenInterestCapRequestSchema = z.object({
+  type: z.literal("perpsAtOpenInterestCap"),
+  dex: z.string().optional()
+});
+
+export const HyperliquidPerpDeployAuctionStatusRequestSchema = z.object({
+  type: z.literal("perpDeployAuctionStatus")
+});
+
+export const HyperliquidPerpDexLimitsRequestSchema = z.object({
+  type: z.literal("perpDexLimits"),
+  dex: z.string().min(1)
+});
+
+export const HyperliquidPerpDexStatusRequestSchema = z.object({
+  type: z.literal("perpDexStatus"),
+  dex: z.string()
+});
+
+export const HyperliquidAllPerpMetasRequestSchema = z.object({
+  type: z.literal("allPerpMetas")
+});
+
+export const HyperliquidPerpAnnotationRequestSchema = z.object({
+  type: z.literal("perpAnnotation"),
+  coin: z.string().min(1)
+});
+
+export const HyperliquidPerpCategoriesRequestSchema = z.object({
+  type: z.literal("perpCategories")
+});
+
+export const HyperliquidPerpConciseAnnotationsRequestSchema = z.object({
+  type: z.literal("perpConciseAnnotations")
+});
+
 export const HyperliquidL2BookRequestSchema = z.object({
   type: z.literal("l2Book"),
   coin: z.string().min(1),
@@ -115,6 +164,93 @@ export const HyperliquidMetaAndAssetCtxsResponseSchema = z.tuple([
   z.array(HyperliquidAssetCtxSchema)
 ]);
 
+export const HyperliquidAllMidsResponseSchema = z.record(
+  z.string(),
+  NonNegativeDecimalStringSchema
+);
+
+export const HyperliquidPerpDexSchema = z
+  .object({
+    name: z.string().min(1),
+    fullName: z.string().optional(),
+    deployer: z.string().optional(),
+    oracleUpdater: z.string().nullable().optional(),
+    feeRecipient: z.string().nullable().optional(),
+    assetToStreamingOiCap: z
+      .array(z.tuple([z.string(), NonNegativeDecimalStringSchema]))
+      .optional(),
+    assetToFundingMultiplier: z
+      .array(z.tuple([z.string(), DecimalStringSchema]))
+      .optional()
+  })
+  .passthrough();
+
+export const HyperliquidPerpDexsResponseSchema = z.array(
+  HyperliquidPerpDexSchema.nullable()
+);
+
+export const HyperliquidPredictedFundingVenueSchema = z.tuple([
+  z.string(),
+  z
+    .object({
+      fundingRate: DecimalStringSchema,
+      nextFundingTime: z.number().int().min(0)
+    })
+    .passthrough()
+    .nullable()
+]);
+
+export const HyperliquidPredictedFundingsResponseSchema = z.array(
+  z.tuple([z.string(), z.array(HyperliquidPredictedFundingVenueSchema)])
+);
+
+export const HyperliquidPerpsAtOpenInterestCapResponseSchema = z.array(z.string());
+
+export const HyperliquidPerpDeployAuctionStatusResponseSchema = z
+  .object({
+    startTimeSeconds: z.number().int().min(0),
+    durationSeconds: z.number().int().min(0),
+    startGas: NonNegativeDecimalStringSchema,
+    currentGas: NonNegativeDecimalStringSchema,
+    endGas: NonNegativeDecimalStringSchema.nullable()
+  })
+  .passthrough();
+
+export const HyperliquidPerpDexLimitsResponseSchema = z
+  .object({
+    totalOiCap: NonNegativeDecimalStringSchema,
+    oiSzCapPerPerp: NonNegativeDecimalStringSchema,
+    maxTransferNtl: NonNegativeDecimalStringSchema,
+    coinToOiCap: z.array(z.tuple([z.string(), NonNegativeDecimalStringSchema]))
+  })
+  .passthrough();
+
+export const HyperliquidPerpDexStatusResponseSchema = z
+  .object({
+    totalNetDeposit: NonNegativeDecimalStringSchema
+  })
+  .passthrough();
+
+export const HyperliquidAllPerpMetasResponseSchema = z.array(
+  HyperliquidMetaResponseSchema
+);
+
+export const HyperliquidPerpAnnotationSchema = z
+  .object({
+    category: z.string().optional(),
+    description: z.string().optional(),
+    keywords: z.array(z.string()).optional()
+  })
+  .passthrough();
+
+export const HyperliquidPerpCategoriesResponseSchema = z.array(
+  z.tuple([z.string(), z.string()])
+);
+
+export const HyperliquidPerpConciseAnnotationsResponseSchema = z.array(
+  z.tuple([z.string(), HyperliquidPerpAnnotationSchema])
+);
+
 export const HyperliquidL2BookLevelSchema = z.object({
   px: NonNegativeDecimalStringSchema,
   sz: NonNegativeDecimalStringSchema,
@@ -162,6 +298,37 @@ export const HyperliquidFundingHistoryResponseSchema = z.array(
 export type HyperliquidMetaAndAssetCtxsRequest = z.infer<
   typeof HyperliquidMetaAndAssetCtxsRequestSchema
 >;
+export type HyperliquidAllMidsRequest = z.infer<typeof HyperliquidAllMidsRequestSchema>;
+export type HyperliquidPerpDexsRequest = z.infer<
+  typeof HyperliquidPerpDexsRequestSchema
+>;
+export type HyperliquidPredictedFundingsRequest = z.infer<
+  typeof HyperliquidPredictedFundingsRequestSchema
+>;
+export type HyperliquidPerpsAtOpenInterestCapRequest = z.infer<
+  typeof HyperliquidPerpsAtOpenInterestCapRequestSchema
+>;
+export type HyperliquidPerpDeployAuctionStatusRequest = z.infer<
+  typeof HyperliquidPerpDeployAuctionStatusRequestSchema
+>;
+export type HyperliquidPerpDexLimitsRequest = z.infer<
+  typeof HyperliquidPerpDexLimitsRequestSchema
+>;
+export type HyperliquidPerpDexStatusRequest = z.infer<
+  typeof HyperliquidPerpDexStatusRequestSchema
+>;
+export type HyperliquidAllPerpMetasRequest = z.infer<
+  typeof HyperliquidAllPerpMetasRequestSchema
+>;
+export type HyperliquidPerpAnnotationRequest = z.infer<
+  typeof HyperliquidPerpAnnotationRequestSchema
+>;
+export type HyperliquidPerpCategoriesRequest = z.infer<
+  typeof HyperliquidPerpCategoriesRequestSchema
+>;
+export type HyperliquidPerpConciseAnnotationsRequest = z.infer<
+  typeof HyperliquidPerpConciseAnnotationsRequestSchema
+>;
 export type HyperliquidL2BookRequest = z.infer<typeof HyperliquidL2BookRequestSchema>;
 export type HyperliquidCandleSnapshotRequest = z.infer<
   typeof HyperliquidCandleSnapshotRequestSchema
@@ -171,6 +338,38 @@ export type HyperliquidFundingHistoryRequest = z.infer<
 >;
 export type HyperliquidMetaAndAssetCtxsResponse = z.infer<
   typeof HyperliquidMetaAndAssetCtxsResponseSchema
+>;
+export type HyperliquidMetaResponse = z.infer<typeof HyperliquidMetaResponseSchema>;
+export type HyperliquidAllMidsResponse = z.infer<
+  typeof HyperliquidAllMidsResponseSchema
+>;
+export type HyperliquidPerpDexsResponse = z.infer<
+  typeof HyperliquidPerpDexsResponseSchema
+>;
+export type HyperliquidPredictedFundingsResponse = z.infer<
+  typeof HyperliquidPredictedFundingsResponseSchema
+>;
+export type HyperliquidPerpsAtOpenInterestCapResponse = z.infer<
+  typeof HyperliquidPerpsAtOpenInterestCapResponseSchema
+>;
+export type HyperliquidPerpDeployAuctionStatusResponse = z.infer<
+  typeof HyperliquidPerpDeployAuctionStatusResponseSchema
+>;
+export type HyperliquidPerpDexLimitsResponse = z.infer<
+  typeof HyperliquidPerpDexLimitsResponseSchema
+>;
+export type HyperliquidPerpDexStatusResponse = z.infer<
+  typeof HyperliquidPerpDexStatusResponseSchema
+>;
+export type HyperliquidAllPerpMetasResponse = z.infer<
+  typeof HyperliquidAllPerpMetasResponseSchema
+>;
+export type HyperliquidPerpAnnotation = z.infer<typeof HyperliquidPerpAnnotationSchema>;
+export type HyperliquidPerpCategoriesResponse = z.infer<
+  typeof HyperliquidPerpCategoriesResponseSchema
+>;
+export type HyperliquidPerpConciseAnnotationsResponse = z.infer<
+  typeof HyperliquidPerpConciseAnnotationsResponseSchema
 >;
 export type HyperliquidL2BookResponse = z.infer<typeof HyperliquidL2BookResponseSchema>;
 export type HyperliquidCandleSnapshotResponse = z.infer<
@@ -232,6 +431,99 @@ export class HyperliquidInfoClient implements HyperliquidReadClient {
     );
     const response = await this.postInfo(request);
     return HyperliquidMetaAndAssetCtxsResponseSchema.parse(response);
+  }
+
+  async allMids(dex?: string): Promise<HyperliquidAllMidsResponse> {
+    const request = HyperliquidAllMidsRequestSchema.parse(
+      dex === undefined ? { type: "allMids" } : { type: "allMids", dex }
+    );
+    const response = await this.postInfo(request);
+    return HyperliquidAllMidsResponseSchema.parse(response);
+  }
+
+  async perpDexs(): Promise<HyperliquidPerpDexsResponse> {
+    const body = HyperliquidPerpDexsRequestSchema.parse({ type: "perpDexs" });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpDexsResponseSchema.parse(response);
+  }
+
+  async predictedFundings(): Promise<HyperliquidPredictedFundingsResponse> {
+    const body = HyperliquidPredictedFundingsRequestSchema.parse({
+      type: "predictedFundings"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPredictedFundingsResponseSchema.parse(response);
+  }
+
+  async perpsAtOpenInterestCap(
+    dex?: string
+  ): Promise<HyperliquidPerpsAtOpenInterestCapResponse> {
+    const body = HyperliquidPerpsAtOpenInterestCapRequestSchema.parse(
+      dex === undefined
+        ? { type: "perpsAtOpenInterestCap" }
+        : { type: "perpsAtOpenInterestCap", dex }
+    );
+    const response = await this.postInfo(body);
+    return HyperliquidPerpsAtOpenInterestCapResponseSchema.parse(response);
+  }
+
+  async perpDeployAuctionStatus(): Promise<HyperliquidPerpDeployAuctionStatusResponse> {
+    const body = HyperliquidPerpDeployAuctionStatusRequestSchema.parse({
+      type: "perpDeployAuctionStatus"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpDeployAuctionStatusResponseSchema.parse(response);
+  }
+
+  async perpDexLimits(dex: string): Promise<HyperliquidPerpDexLimitsResponse> {
+    const body = HyperliquidPerpDexLimitsRequestSchema.parse({
+      dex,
+      type: "perpDexLimits"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpDexLimitsResponseSchema.parse(response);
+  }
+
+  async perpDexStatus(dex = ""): Promise<HyperliquidPerpDexStatusResponse> {
+    const body = HyperliquidPerpDexStatusRequestSchema.parse({
+      dex,
+      type: "perpDexStatus"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpDexStatusResponseSchema.parse(response);
+  }
+
+  async allPerpMetas(): Promise<HyperliquidAllPerpMetasResponse> {
+    const body = HyperliquidAllPerpMetasRequestSchema.parse({
+      type: "allPerpMetas"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidAllPerpMetasResponseSchema.parse(response);
+  }
+
+  async perpAnnotation(coin: string): Promise<HyperliquidPerpAnnotation> {
+    const body = HyperliquidPerpAnnotationRequestSchema.parse({
+      coin,
+      type: "perpAnnotation"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpAnnotationSchema.parse(response);
+  }
+
+  async perpCategories(): Promise<HyperliquidPerpCategoriesResponse> {
+    const body = HyperliquidPerpCategoriesRequestSchema.parse({
+      type: "perpCategories"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpCategoriesResponseSchema.parse(response);
+  }
+
+  async perpConciseAnnotations(): Promise<HyperliquidPerpConciseAnnotationsResponse> {
+    const body = HyperliquidPerpConciseAnnotationsRequestSchema.parse({
+      type: "perpConciseAnnotations"
+    });
+    const response = await this.postInfo(body);
+    return HyperliquidPerpConciseAnnotationsResponseSchema.parse(response);
   }
 
   async l2Book(

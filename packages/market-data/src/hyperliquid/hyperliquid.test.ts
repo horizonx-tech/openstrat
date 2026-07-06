@@ -51,6 +51,50 @@ describe("Hyperliquid read-only adapter", () => {
     );
   });
 
+  it("wraps screener and perp dex info requests without exchange actions", async () => {
+    const calls: unknown[] = [];
+    const client = new HyperliquidInfoClient({
+      endpoint: "https://example.invalid/info",
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { type: string };
+        calls.push(body);
+        return new Response(JSON.stringify(readInfoFixture(body.type)), {
+          headers: { "content-type": "application/json" },
+          status: 200
+        });
+      }
+    });
+
+    await client.allMids();
+    await client.allPerpMetas();
+    await client.perpDexs();
+    await client.predictedFundings();
+    await client.perpsAtOpenInterestCap("xyz");
+    await client.perpDeployAuctionStatus();
+    await client.perpDexLimits("xyz");
+    await client.perpDexStatus("xyz");
+    await client.perpCategories();
+    await client.perpConciseAnnotations();
+    await client.perpAnnotation("BTC");
+
+    expect(calls).toEqual([
+      { type: "allMids" },
+      { type: "allPerpMetas" },
+      { type: "perpDexs" },
+      { type: "predictedFundings" },
+      { dex: "xyz", type: "perpsAtOpenInterestCap" },
+      { type: "perpDeployAuctionStatus" },
+      { dex: "xyz", type: "perpDexLimits" },
+      { dex: "xyz", type: "perpDexStatus" },
+      { type: "perpCategories" },
+      { type: "perpConciseAnnotations" },
+      { coin: "BTC", type: "perpAnnotation" }
+    ]);
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(client))).not.toEqual(
+      expect.arrayContaining(["exchange", "order", "cancel", "withdraw"])
+    );
+  });
+
   it("normalizes metaAndAssetCtxs into registry entries and provenance-aware market data", () => {
     const response = readFixture("meta-and-asset-ctxs.json");
 
@@ -158,6 +202,63 @@ describe("Hyperliquid read-only adapter", () => {
     });
   });
 });
+
+function readInfoFixture(type: string): unknown {
+  switch (type) {
+    case "allMids":
+      return { BTC: "113377.0", ETH: "4200.0" };
+    case "allPerpMetas":
+      return [readFixture<unknown[]>("meta-and-asset-ctxs.json")[0]];
+    case "perpDexs":
+      return [
+        null,
+        {
+          assetToFundingMultiplier: [["XYZ100", "1.5"]],
+          assetToStreamingOiCap: [["XYZ100", "100000.0"]],
+          deployer: "0x0000000000000000000000000000000000000001",
+          fullName: "XYZ perps",
+          name: "xyz"
+        }
+      ];
+    case "predictedFundings":
+      return [
+        [
+          "BTC",
+          [
+            ["HlPerp", { fundingRate: "0.0000125", nextFundingTime: 1733958000000 }],
+            ["BybitPerp", null]
+          ]
+        ]
+      ];
+    case "perpsAtOpenInterestCap":
+      return ["XYZ100"];
+    case "perpDeployAuctionStatus":
+      return {
+        currentGas: "500.0",
+        durationSeconds: 111600,
+        endGas: null,
+        startGas: "500.0",
+        startTimeSeconds: 1747656000
+      };
+    case "perpDexLimits":
+      return {
+        coinToOiCap: [["XYZ100", "100000.0"]],
+        maxTransferNtl: "100000000.0",
+        oiSzCapPerPerp: "10000000000.0",
+        totalOiCap: "10000000.0"
+      };
+    case "perpDexStatus":
+      return { totalNetDeposit: "4103492112.4478230476" };
+    case "perpCategories":
+      return [["xyz:XYZ100", "preipo"]];
+    case "perpConciseAnnotations":
+      return [["xyz:XYZ100", { category: "preipo", keywords: ["equities"] }]];
+    case "perpAnnotation":
+      return { category: "majors", description: "Bitcoin perp" };
+    default:
+      throw new Error(`Unhandled info fixture type ${type}`);
+  }
+}
 
 describe("Hyperliquid registry and historical ingest", () => {
   let tempDir: string;
