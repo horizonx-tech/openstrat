@@ -7,6 +7,7 @@ export default [
       "**/checkpoint/**",
       "**/coverage/**",
       "**/dist/**",
+      "**/.next/**",
       "**/node_modules/**",
       "pnpm-lock.yaml"
     ]

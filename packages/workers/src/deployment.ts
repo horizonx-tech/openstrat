@@ -567,11 +567,7 @@ function summary(input: {
   intents_emitted: number;
   risk_reviews: number;
   stop_reason:
-    | "completed"
-    | "duration_expired"
-    | "manual_stop"
-    | "kill_switch"
-    | "failed";
+    "completed" | "duration_expired" | "manual_stop" | "kill_switch" | "failed";
   event_stream_id: string;
   reliability_boundary: string;
 }): BotRunSummary {

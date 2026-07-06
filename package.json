@@ -6,9 +6,11 @@
   "packageManager": "pnpm@10.18.2",
   "scripts": {
     "build": "pnpm -r --sort run build",
-    "format:check": "prettier --check .",
+    "dev:web": "pnpm --filter @openstrat/web dev",
+    "format:check": "prettier --check . \"!**/.next/**\" --ignore-unknown",
     "ingest:hyperliquid": "pnpm --filter @openstrat/market-data ingest:hyperliquid --",
     "lint": "eslint .",
+    "start:web": "pnpm --filter @openstrat/web start",
     "smoke:live:hyperliquid": "pnpm --filter @openstrat/market-data smoke:live:hyperliquid",
     "test": "vitest run",
     "typecheck": "pnpm -r --sort run typecheck"
@@ -18,7 +20,7 @@
     "@types/node": "latest",
     "eslint": "latest",
     "prettier": "latest",
-    "typescript": "latest",
+    "typescript": "5.9.3",
     "typescript-eslint": "latest",
     "vitest": "latest"
   }

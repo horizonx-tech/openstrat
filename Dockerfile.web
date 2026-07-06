@@ -1,0 +1,72 @@
+FROM node:22.23.1-slim AS base
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
+
+FROM base AS deps
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/backtesting/package.json packages/backtesting/tsconfig.json ./packages/backtesting/
+COPY packages/backtesting/src ./packages/backtesting/src
+COPY packages/domain/package.json packages/domain/tsconfig.json ./packages/domain/
+COPY packages/domain/src ./packages/domain/src
+COPY packages/market-data/package.json packages/market-data/tsconfig.json ./packages/market-data/
+COPY packages/market-data/src ./packages/market-data/src
+COPY packages/persistence/package.json packages/persistence/tsconfig.json ./packages/persistence/
+COPY packages/persistence/src ./packages/persistence/src
+COPY packages/risk/package.json packages/risk/tsconfig.json ./packages/risk/
+COPY packages/risk/src ./packages/risk/src
+COPY packages/strategy-sdk/package.json packages/strategy-sdk/tsconfig.json ./packages/strategy-sdk/
+COPY packages/strategy-sdk/src ./packages/strategy-sdk/src
+COPY packages/workers/package.json packages/workers/tsconfig.json ./packages/workers/
+COPY packages/workers/src ./packages/workers/src
+COPY apps/web/package.json apps/web/tsconfig.json apps/web/next-env.d.ts apps/web/next.config.mjs ./apps/web/
+COPY apps/web/public ./apps/web/public
+COPY apps/web/src ./apps/web/src
+COPY apps/web/supabase ./apps/web/supabase
+
+RUN pnpm install --frozen-lockfile --filter @openstrat/web...
+
+FROM deps AS builder
+
+ARG NEXT_PUBLIC_APP_URL
+ARG PRIVY_APP_ID
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_PRIVY_CLIENT_ID
+ARG NEXT_PUBLIC_NETWORK_TYPE=testnet
+ARG NEXT_PUBLIC_HYPER_EVM_RPC_URL=https://rpcs.chain.link/hyperevm/testnet
+ARG NEXT_PUBLIC_HYPER_EVM_MAINNET_RPC_URL=https://rpc.hyperliquid.xyz/evm
+ARG NEXT_PUBLIC_HYPER_EVM_TESTNET_RPC_URL=https://rpcs.chain.link/hyperevm/testnet
+
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+ENV PRIVY_APP_ID=$PRIVY_APP_ID
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_PRIVY_CLIENT_ID=$NEXT_PUBLIC_PRIVY_CLIENT_ID
+ENV NEXT_PUBLIC_NETWORK_TYPE=$NEXT_PUBLIC_NETWORK_TYPE
+ENV NEXT_PUBLIC_HYPER_EVM_RPC_URL=$NEXT_PUBLIC_HYPER_EVM_RPC_URL
+ENV NEXT_PUBLIC_HYPER_EVM_MAINNET_RPC_URL=$NEXT_PUBLIC_HYPER_EVM_MAINNET_RPC_URL
+ENV NEXT_PUBLIC_HYPER_EVM_TESTNET_RPC_URL=$NEXT_PUBLIC_HYPER_EVM_TESTNET_RPC_URL
+
+RUN pnpm -r --sort --filter @openstrat/web... build
+
+FROM node:22.23.1-slim AS runner
+
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOSTNAME=0.0.0.0
+WORKDIR /app
+
+COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=node:node /app/apps/web/public ./apps/web/public
+
+USER node
+
+EXPOSE 8080
+
+CMD ["node", "apps/web/server.js"]

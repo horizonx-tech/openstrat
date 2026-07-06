@@ -287,10 +287,7 @@ function recordToolCompleted(
   toolName: AgentToolGatewayToolName,
   payload: Record<string, unknown> & {
     side_effect:
-      | "none"
-      | "event_logged"
-      | "proposal_written"
-      | "scratch_workspace_write";
+      "none" | "event_logged" | "proposal_written" | "scratch_workspace_write";
   }
 ): void {
   const record = AgentToolCallRecordSchema.parse({

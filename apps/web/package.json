@@ -1,0 +1,33 @@
+{
+  "name": "@openstrat/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @openstrat/market-data... build && next build",
+    "dev": "next dev",
+    "start": "node .next/standalone/apps/web/server.js",
+    "typecheck": "pnpm --filter @openstrat/market-data... build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@openstrat/domain": "workspace:*",
+    "@openstrat/market-data": "workspace:*",
+    "@next/env": "16.2.9",
+    "@privy-io/node": "0.24.0",
+    "@privy-io/react-auth": "3.32.2",
+    "@supabase/ssr": "0.12.0",
+    "@supabase/supabase-js": "2.110.0",
+    "next": "16.2.9",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "viem": "2.54.1",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
